@@ -1,4 +1,32 @@
+* emacs-23.4-mac-2.3 (2012-08-27)
+
+** Fixed bugs
+
+*** CVE-2012-3479: Security flaw in enable-local-eval.
+(See http://lists.gnu.org/archive/html/emacs-devel/2012-08/msg00396.html)
+
+*** Preferred font family selection does not work on Mac OS X 10.8.
+
+*** The `nm' command reports src/emacs as a malformed object if built
+on OS X 10.8.
+
+*** Cannot build with ARC enabled using Command Line Tools (OS X Lion)
+for Xcode - August 2012.
+
+** Improvements
+
+*** If Emacs.app is launched from Finder or via Resume on OS X 10.8,
+then it inherits environment variable settings of user's login shell
+regardless of existence of ~/.MacOSX/environment.plist, which is
+ignored on OS X 10.8 anyway.
+
+*** Use sRGB color space instead of device RGB on Mac OS X 10.4 and
+later.  This does not change the appearance on OS X 10.8 which regards
+device RGB as sRGB.
+
+
 * emacs-23.4-mac-2.2 (2012-07-26)
+http://lists.gnu.org/archive/html/emacs-devel/2012-07/msg00561.html
 
 ** Fixed bugs
 

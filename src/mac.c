@@ -41,6 +41,8 @@ along with GNU Emacs Mac port.  If not, see <http://www.gnu.org/licenses/>.  */
 #include <sys/param.h>
 #include <fcntl.h>
 
+#include <libkern/OSByteOrder.h>
+
 #undef init_process
 #include <mach/mach.h>
 #include <servers/bootstrap.h>
@@ -140,6 +142,36 @@ bstree_find (bstree, obj)
   return bstree;
 }
 
+/* Return unibyte Lisp string representing four char code CODE.  */
+
+Lisp_Object
+mac_four_char_code_to_string (code)
+     FourCharCode code;
+{
+  Lisp_Object string = make_uninit_string (sizeof (FourCharCode));
+
+  OSWriteBigInt32 (SDATA (string), 0, code);
+
+  return string;
+}
+
+/* Store four char code corresponding to Lisp string STRING to *CODE.
+   Return non-zero if and only if STRING correctly represents four
+   char code (i.e., 4-byte Lisp string).  */
+
+Boolean
+mac_string_to_four_char_code (string, code)
+     Lisp_Object string;
+     FourCharCode *code;
+{
+  if (!(STRINGP (string) && SBYTES (string) == sizeof (FourCharCode)))
+    return false;
+
+  *code = OSReadBigInt32 (SDATA (string), 0);
+
+  return true;
+}
+
 
 /***********************************************************************
 		  Conversions on Apple event objects
@@ -230,8 +262,7 @@ mac_aelist_to_lisp (desc_list)
 	      }
 	    if (err != noErr)
 	      break;
-	    desc_type = EndianU32_NtoB (desc_type);
-	    elem = Fcons (make_unibyte_string ((char *) &desc_type, 4), elem);
+	    elem = Fcons (mac_four_char_code_to_string (desc_type), elem);
 	    break;
 	  }
 
@@ -244,11 +275,7 @@ mac_aelist_to_lisp (desc_list)
 	      if (attribute_p)
 		elem = Fcons (ae_attr_table[count-1].symbol, elem);
 	      else
-		{
-		  keyword = EndianU32_NtoB (keyword);
-		  elem = Fcons (make_unibyte_string ((char *) &keyword, 4),
-				elem);
-		}
+		elem = Fcons (mac_four_char_code_to_string (keyword), elem);
 	    }
 
 	  result = Fcons (elem, result);
@@ -264,8 +291,8 @@ mac_aelist_to_lisp (desc_list)
       goto again;
     }
 
-  desc_type = EndianU32_NtoB (desc_list->descriptorType);
-  return Fcons (make_unibyte_string ((char *) &desc_type, 4), result);
+  return Fcons (mac_four_char_code_to_string (desc_list->descriptorType),
+		result);
 }
 
 Lisp_Object
@@ -307,10 +334,7 @@ mac_aedesc_to_lisp (desc)
 	    elem = mac_aedesc_to_lisp (&desc1);
 	    AEDisposeDesc (&desc1);
 	    if (desc_type != typeAEList)
-	      {
-		keyword = EndianU32_NtoB (keyword);
-		elem = Fcons (make_unibyte_string ((char *) &keyword, 4), elem);
-	      }
+	      elem = Fcons (mac_four_char_code_to_string (keyword), elem);
 	    result = Fcons (elem, result);
 	    count--;
 	  }
@@ -327,8 +351,7 @@ mac_aedesc_to_lisp (desc)
   if (err != noErr)
     return Qnil;
 
-  desc_type = EndianU32_NtoB (desc_type);
-  return Fcons (make_unibyte_string ((char *) &desc_type, 4), result);
+  return Fcons (mac_four_char_code_to_string (desc_type), result);
 }
 
 static OSErr
@@ -339,10 +362,10 @@ mac_ae_put_lisp_1 (desc, keyword_or_index, obj, ancestors)
      struct bstree_node **ancestors;
 {
   OSErr err;
+  DescType desc_type1;
 
-  if (CONSP (obj) && STRINGP (XCAR (obj)) && SBYTES (XCAR (obj)) == 4)
+  if (CONSP (obj) && mac_string_to_four_char_code (XCAR (obj), &desc_type1))
     {
-      DescType desc_type1 = EndianU32_BtoN (*((UInt32 *) SDATA (XCAR (obj))));
       Lisp_Object data = XCDR (obj), rest;
       AEDesc desc1;
       struct bstree_node **bstree_ref;
@@ -378,14 +401,10 @@ mac_ae_put_lisp_1 (desc, keyword_or_index, obj, ancestors)
 
 		      if (desc_type1 == typeAERecord)
 			{
-			  if (CONSP (elem) && STRINGP (XCAR (elem))
-			      && SBYTES (XCAR (elem)) == 4)
-			    {
-			      keyword_or_index1 =
-				EndianU32_BtoN (*((UInt32 *)
-						  SDATA (XCAR (elem))));
-			      elem = XCDR (elem);
-			    }
+			  if (CONSP (elem)
+			      && mac_string_to_four_char_code (XCAR (elem),
+							       &keyword_or_index1))
+			    elem = XCDR (elem);
 			  else
 			    continue;
 			}
@@ -469,6 +488,7 @@ create_apple_event_from_lisp (apple_event, result)
       for (rest = XCDR (apple_event); CONSP (rest); rest = XCDR (rest))
 	{
 	  Lisp_Object attr = XCAR (rest), name, type, data;
+	  DescType desc_type;
 	  int i;
 
 	  if (!(CONSP (attr) && SYMBOLP (XCAR (attr)) && CONSP (XCDR (attr))))
@@ -476,15 +496,12 @@ create_apple_event_from_lisp (apple_event, result)
 	  name = XCAR (attr);
 	  type = XCAR (XCDR (attr));
 	  data = XCDR (XCDR (attr));
-	  if (!(STRINGP (type) && SBYTES (type) == 4))
+	  if (!mac_string_to_four_char_code (type, &desc_type))
 	    continue;
 	  for (i = 0; i < sizeof (ae_attr_table) / sizeof (ae_attr_table[0]);
 	       i++)
 	    if (EQ (name, ae_attr_table[i].symbol))
 	      {
-		DescType desc_type =
-		  EndianU32_BtoN (*((UInt32 *) SDATA (type)));
-
 		switch (desc_type)
 		  {
 		  case typeNull:
@@ -512,13 +529,11 @@ create_apple_event_from_lisp (apple_event, result)
       for (rest = XCDR (apple_event); CONSP (rest); rest = XCDR (rest))
 	{
 	  Lisp_Object param = XCAR (rest);
+	  AEKeyword keyword;
 
-	  if (!(CONSP (param) && STRINGP (XCAR (param))
-		&& SBYTES (XCAR (param)) == 4))
-	    continue;
-	  mac_ae_put_lisp (result,
-			   EndianU32_BtoN (*((UInt32 *) SDATA (XCAR (param)))),
-			   XCDR (param));
+	  if (CONSP (param)
+	      && mac_string_to_four_char_code (XCAR (param), &keyword))
+	    mac_ae_put_lisp (result, keyword, XCDR (param));
 	}
     }
 
@@ -544,18 +559,11 @@ mac_coerce_file_name_ptr (type_code, data_ptr, data_size,
   else if (type_code == TYPE_FILE_NAME)
     /* Coercion from undecoded file name.  */
     {
-      CFStringRef str;
-      CFURLRef url = NULL;
+      CFURLRef url;
       CFDataRef data = NULL;
 
-      str = CFStringCreateWithBytes (NULL, data_ptr, data_size,
-				     kCFStringEncodingUTF8, false);
-      if (str)
-	{
-	  url = CFURLCreateWithFileSystemPath (NULL, str,
-					       kCFURLPOSIXPathStyle, false);
-	  CFRelease (str);
-	}
+      url = CFURLCreateFromFileSystemRepresentation (NULL, data_ptr,
+						     data_size, false);
       if (url)
 	{
 	  data = CFURLCreateData (NULL, url, kCFStringEncodingUTF8, true);
@@ -795,11 +803,9 @@ mac_event_parameters_to_lisp (event, num_params, names, types)
 						       '?');
 	  if (data == NULL)
 	    break;
-	  name = EndianU32_NtoB (name);
-	  type = EndianU32_NtoB (typeUTF8Text);
 	  result =
-	    Fcons (Fcons (make_unibyte_string ((char *) &name, 4),
-			  Fcons (make_unibyte_string ((char *) &type, 4),
+	    Fcons (Fcons (mac_four_char_code_to_string (name),
+			  Fcons (mac_four_char_code_to_string (typeUTF8Text),
 				 make_unibyte_string (CFDataGetBytePtr (data),
 						      CFDataGetLength (data)))),
 		   result);
@@ -813,15 +819,11 @@ mac_event_parameters_to_lisp (event, num_params, names, types)
 	  buf = xrealloc (buf, size);
 	  err = GetEventParameter (event, name, type, NULL, size, NULL, buf);
 	  if (err == noErr)
-	    {
-	      name = EndianU32_NtoB (name);
-	      type = EndianU32_NtoB (type);
-	      result =
-		Fcons (Fcons (make_unibyte_string ((char *) &name, 4),
-			      Fcons (make_unibyte_string ((char *) &type, 4),
-				     make_unibyte_string (buf, size))),
-		       result);
-	    }
+	    result =
+	      Fcons (Fcons (mac_four_char_code_to_string (name),
+			    Fcons (mac_four_char_code_to_string (type),
+				   make_unibyte_string (buf, size))),
+		     result);
 	  break;
 	}
     }
@@ -2178,7 +2180,8 @@ xrm_get_preference_database (application)
  out:
   if (key_set)
     CFRelease (key_set);
-  CFRelease (app_id);
+  if (app_id)
+    CFRelease (app_id);
 
   UNGCPRO;
 
@@ -2231,25 +2234,13 @@ mac_get_code_from_arg(Lisp_Object arg, OSType defCode)
     {
       /* check type string */
       CHECK_STRING(arg);
-      if (SBYTES (arg) != 4)
+      if (!mac_string_to_four_char_code (arg, &result))
 	{
 	  error ("Wrong argument: need string of length 4 for code");
 	}
-      result = EndianU32_BtoN (*((UInt32 *) SDATA (arg)));
     }
   return result;
 }
-
-/* Convert the 4 byte character code into a 4 byte string.  */
-
-Lisp_Object
-mac_get_object_from_code(OSType defCode)
-{
-  UInt32 code = EndianU32_NtoB (defCode);
-
-  return make_unibyte_string ((char *)&code, 4);
-}
-
 
 DEFUN ("mac-get-file-creator", Fmac_get_file_creator, Smac_get_file_creator, 1, 1, 0,
        doc: /* Get the creator code of FILENAME as a four character string. */)
@@ -2277,7 +2268,7 @@ DEFUN ("mac-get-file-creator", Fmac_get_file_creator, Smac_get_file_creator, 1, 
 				&catalogInfo, NULL, NULL, NULL);
       if (status == noErr)
 	{
-	  result = mac_get_object_from_code(((FileInfo*)&catalogInfo.finderInfo)->fileCreator);
+	  result = mac_four_char_code_to_string (((FileInfo*)&catalogInfo.finderInfo)->fileCreator);
 	}
     }
   UNBLOCK_INPUT;
@@ -2313,7 +2304,7 @@ DEFUN ("mac-get-file-type", Fmac_get_file_type, Smac_get_file_type, 1, 1, 0,
 				&catalogInfo, NULL, NULL, NULL);
       if (status == noErr)
 	{
-	  result = mac_get_object_from_code(((FileInfo*)&catalogInfo.finderInfo)->fileType);
+	  result = mac_four_char_code_to_string (((FileInfo*)&catalogInfo.finderInfo)->fileType);
 	}
     }
   UNBLOCK_INPUT;
@@ -2416,9 +2407,7 @@ containing an unresolvable alias.  */)
      (filename)
      Lisp_Object filename;
 {
-  OSStatus err;
   Lisp_Object handler, result = Qnil;
-  FSRef fref;
 
   CHECK_STRING (filename);
   filename = Fexpand_file_name (filename, Qnil);
@@ -2430,33 +2419,215 @@ containing an unresolvable alias.  */)
     return call2 (handler, Qmac_file_alias_p, filename);
 
   BLOCK_INPUT;
-  err = FSPathMakeRef (SDATA (ENCODE_FILE (filename)), &fref, NULL);
-  if (err == noErr)
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1060
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1060
+  if (CFURLCreateByResolvingBookmarkData != NULL)
+#endif
     {
-      Boolean alias_p = false, folder_p;
+      Lisp_Object encoded_filename = ENCODE_FILE (filename);
+      CFURLRef url =
+	CFURLCreateFromFileSystemRepresentation (NULL, SDATA (encoded_filename),
+						 SBYTES (encoded_filename),
+						 false);
 
-      err = FSResolveAliasFileWithMountFlags (&fref, false,
-					      &folder_p, &alias_p,
-					      kResolveAliasFileNoUI);
-      if (err != noErr)
-	result = Qt;
-      else if (alias_p)
+      if (url)
 	{
-	  char buf[MAXPATHLEN];
+	  CFBooleanRef is_alias_file;
 
-	  err = FSRefMakePath (&fref, buf, sizeof (buf));
-	  if (err == noErr)
+	  if (CFURLCopyResourcePropertyForKey (url, kCFURLIsAliasFileKey,
+					       &is_alias_file, NULL)
+	      && CFBooleanGetValue (is_alias_file))
 	    {
-	      result = make_unibyte_string (buf, strlen (buf));
-	      if (buf[0] == '/' && index (buf, ':'))
-		result = concat2 (build_string ("/:"), result);
-	      result = DECODE_FILE (result);
+	      CFDataRef data;
+	      Boolean stale_p;
+	      CFURLRef resolved_url = NULL;
+
+	      data = CFURLCreateBookmarkDataFromFile (NULL, url, NULL);
+	      if (data)
+		{
+		  CFURLBookmarkResolutionOptions options =
+		    (kCFBookmarkResolutionWithoutUIMask
+		     | kCFBookmarkResolutionWithoutMountingMask);
+
+		  resolved_url =
+		    CFURLCreateByResolvingBookmarkData (NULL, data, options,
+							NULL, NULL,
+							&stale_p, NULL);
+		  CFRelease (data);
+		}
+	      if (resolved_url)
+		{
+		  char buf[MAXPATHLEN];
+
+		  if (!stale_p
+		      && CFURLGetFileSystemRepresentation (resolved_url, true,
+							   (UInt8 *) buf,
+							   sizeof (buf)))
+		    result = make_unibyte_string (buf, strlen (buf));
+		  CFRelease (resolved_url);
+		}
+	      if (!STRINGP (result))
+		result = Qt;
+	    }
+	  CFRelease (url);
+	}
+    }
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1060
+  else		      /* CFURLCreateByResolvingBookmarkData == NULL */
+#endif
+#endif
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1060
+    {
+      OSStatus err;
+      FSRef fref;
+
+      err = FSPathMakeRef (SDATA (ENCODE_FILE (filename)), &fref, NULL);
+      if (err == noErr)
+	{
+	  Boolean alias_p = false, folder_p;
+
+	  err = FSResolveAliasFileWithMountFlags (&fref, false,
+						  &folder_p, &alias_p,
+						  kResolveAliasFileNoUI);
+	  if (err != noErr)
+	    result = Qt;
+	  else if (alias_p)
+	    {
+	      char buf[MAXPATHLEN];
+
+	      err = FSRefMakePath (&fref, (UInt8 *) buf, sizeof (buf));
+	      if (err == noErr)
+		result = make_unibyte_string (buf, strlen (buf));
 	    }
 	}
     }
+#endif
   UNBLOCK_INPUT;
 
+  if (STRINGP (result))
+    {
+      char *p = SDATA (result);
+
+      if (p[0] == '/' && strchr (p, ':'))
+	result = concat2 (build_string ("/:"), result);
+      result = DECODE_FILE (result);
+    }
+
   return result;
+}
+
+static OSStatus
+mac_fs_path_make_ref_do_not_follow_leaf_symlink (file, ref)
+     const UInt8 *file;
+     FSRef *ref;
+{
+  OSStatus err;
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1040
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1040 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020
+  if (FSPathMakeRefWithOptions != NULL)
+#endif
+    {
+      err = FSPathMakeRefWithOptions (file,
+				      kFSPathMakeRefDoNotFollowLeafSymlink,
+				      ref, NULL);
+    }
+#endif
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1040 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020
+  else				/* FSPathMakeRefWithOptions == NULL */
+#endif
+#if MAC_OS_X_VERSION_MAX_ALLOWED < 1040 || (MAC_OS_X_VERSION_MIN_REQUIRED < 1040 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020)
+    {
+      struct stat st;
+
+      if (lstat (file, &st) < 0)
+	err = fnfErr;
+      else if (!S_ISLNK (st.st_mode))
+	err = FSPathMakeRef (file, ref, NULL);
+      else
+	{
+	  char *leaf = strrchr (file, '/') + 1;
+	  size_t parent_len = leaf - (char *) file;
+	  char *parent = alloca (parent_len + 1);
+	  FSRef parent_ref;
+
+	  memcpy (parent, file, parent_len);
+	  parent[parent_len] = '\0';
+	  err = FSPathMakeRef (parent, &parent_ref, NULL);
+	  if (err == noErr)
+	    {
+	      CFStringRef name_str =
+		CFStringCreateWithBytes (NULL, leaf,
+					 strlen ((char *) file) - parent_len,
+					 kCFStringEncodingUTF8, false);
+
+	      if (name_str)
+		{
+		  UniCharCount name_len = CFStringGetLength (name_str);
+		  UniChar *name = alloca (sizeof (UniChar) * name_len);
+
+		  CFStringGetCharacters (name_str, CFRangeMake (0, name_len),
+					 name);
+		  err = FSMakeFSRefUnicode (&parent_ref, name_len, name,
+					    kTextEncodingUnknown, ref);
+		  CFRelease (name_str);
+		}
+	      else
+		err = memFullErr;
+	    }
+	}
+    }
+#endif
+
+  return err;
+}
+
+static OSStatus
+mac_ae_create_desc_for_file_to_trash (file, desc)
+     const UInt8 *file;
+     AEDesc *desc;
+{
+  OSStatus err;
+#if MAC_OS_X_VERSION_MAX_ALLOWED < 1040 || (MAC_OS_X_VERSION_MIN_REQUIRED < 1040 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020)
+  SInt32 response;
+
+  err = Gestalt (gestaltSystemVersion, &response);
+  if (err == noErr)
+    {
+      if (response < 0x1040)
+	{
+	  FSRef fref;
+
+	  err = mac_fs_path_make_ref_do_not_follow_leaf_symlink (file, &fref);
+	  if (err == noErr)
+	    {
+	      if (response < 0x1030)
+		/* Coerce to typeAlias as Finder on Mac OS X 10.2
+		   doesn't accept FSRef.  We should not do this on
+		   later versions because it leads to the deletion of
+		   the destination of the symbolic link.  */
+		err = AECoercePtr (typeFSRef, &fref, sizeof (FSRef),
+				   typeAlias, desc);
+	      else
+		/* Specifying typeFileURL as target type enables us to
+		   delete the specified symbolic link itself on Mac OS
+		   X 10.4 and later.  But that doesn't work on Mac OS
+		   X 10.3.  That's why we created an FSRef without
+		   following the link at the leaf position.  */
+		err = AECreateDesc (typeFSRef, &fref, sizeof (FSRef), desc);
+	    }
+	}
+      else
+#endif
+	{
+	  err = AECoercePtr (TYPE_FILE_NAME, file, strlen ((char *) file),
+			     typeFileURL, desc);
+	}
+#if MAC_OS_X_VERSION_MAX_ALLOWED < 1040 || (MAC_OS_X_VERSION_MIN_REQUIRED < 1040 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020)
+    }
+#endif
+
+  return err;
 }
 
 /* Moving files to the system recycle bin.
@@ -2464,11 +2635,10 @@ containing an unresolvable alias.  */)
 DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
        Ssystem_move_file_to_trash, 1, 1, 0,
        doc: /* Move file or directory named FILENAME to the recycle bin.  */)
-     (filename)
+  (filename)
      Lisp_Object filename;
 {
   OSStatus err;
-  FSRef fref;
   Lisp_Object errstring = Qnil;
   Lisp_Object handler;
   Lisp_Object encoded_file;
@@ -2489,160 +2659,80 @@ DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
 
   encoded_file = ENCODE_FILE (filename);
 
-#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1040
-#if MAC_OS_X_VERSION_MIN_REQUIRED < 1040 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020
-  if (FSPathMakeRefWithOptions != NULL)
-#endif
-    {
-      BLOCK_INPUT;
-      err = FSPathMakeRefWithOptions (SDATA (encoded_file),
-				      kFSPathMakeRefDoNotFollowLeafSymlink,
-				      &fref, NULL);
-      UNBLOCK_INPUT;
-    }
-#endif
-#if MAC_OS_X_VERSION_MIN_REQUIRED < 1040 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020
-  else				/* FSPathMakeRefWithOptions == NULL */
-#endif
-#if MAC_OS_X_VERSION_MAX_ALLOWED < 1040 || (MAC_OS_X_VERSION_MIN_REQUIRED < 1040 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020)
-    {
-      struct stat st;
-
-      if (lstat (SDATA (encoded_file), &st) < 0)
-	report_file_error ("Removing old name", list1 (filename));
-
-      BLOCK_INPUT;
-      if (!S_ISLNK (st.st_mode))
-	err = FSPathMakeRef (SDATA (encoded_file), &fref, NULL);
-      else
-	{
-	  char *leaf = rindex (SDATA (encoded_file), '/') + 1;
-	  size_t parent_len = leaf - (char *) SDATA (encoded_file);
-	  char *parent = alloca (parent_len + 1);
-	  FSRef parent_ref;
-
-	  memcpy (parent, SDATA (encoded_file), parent_len);
-	  parent[parent_len] = '\0';
-	  err = FSPathMakeRef (parent, &parent_ref, NULL);
-	  if (err == noErr)
-	    {
-	      CFStringRef name_str =
-		CFStringCreateWithBytes (NULL, leaf,
-					 SBYTES (encoded_file) - parent_len,
-					 kCFStringEncodingUTF8, false);
-
-	      if (name_str)
-		{
-		  UniCharCount name_len = CFStringGetLength (name_str);
-		  UniChar *name = alloca (sizeof (UniChar) * name_len);
-
-		  CFStringGetCharacters (name_str, CFRangeMake (0, name_len),
-					 name);
-		  err = FSMakeFSRefUnicode (&parent_ref, name_len, name,
-					    kTextEncodingUnknown, &fref);
-		  CFRelease (name_str);
-		}
-	      else
-		err = memFullErr;
-	    }
-	}
-      UNBLOCK_INPUT;
-    }
-#endif
-
-  if (err == noErr)
-    {
-      BLOCK_INPUT;
+  BLOCK_INPUT;
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
-      if (!mac_system_move_file_to_trash_use_finder
+  if (!mac_system_move_file_to_trash_use_finder
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 1050 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020
-	  && FSMoveObjectToTrashSync != NULL
+      && FSMoveObjectToTrashSync != NULL
 #endif
-	  )
-	{
-	  /* FSPathMoveObjectToTrashSync tries to delete the
-	     destination of the specified symbolic link.  So we use
-	     FSMoveObjectToTrashSync for an FSRef created with
-	     kFSPathMakeRefDoNotFollowLeafSymlink.  */
-	  err = FSMoveObjectToTrashSync (&fref, NULL,
-					 kFSFileOperationDefaultOptions);
-	}
-      else
-#endif
-	{
-	  const OSType finderSignature = 'MACS';
-	  SInt32 response;
-	  AEDesc desc;
-	  AppleEvent event, reply;
+      )
+    {
+      FSRef fref;
 
-	  err = Gestalt (gestaltSystemVersion, &response);
-	  if (err == noErr)
-	    {
-	      if (response < 0x1030)
-		/* Coerce to typeAlias as Finder on Mac OS X 10.2
-		   doesn't accept FSRef.  We should not do this on
-		   later versions because it leads to the deletion of
-		   the destination of the symbolic link.  */
-		err = AECoercePtr (typeFSRef, &fref, sizeof (FSRef),
-				   typeAlias, &desc);
-	      else
-		/* Specifying typeFileURL as target type enables us to
-		   delete the specified symbolic link itself on Mac OS
-		   X 10.4 and later.  But that doesn't work on Mac OS
-		   X 10.3.  That's why we created an FSRef without
-		   following the link at the leaf position.  */
-		err = AECreateDesc (typeFSRef, &fref, sizeof (FSRef), &desc);
-	    }
-	  if (err == noErr)
-	    {
-	      err = AEBuildAppleEvent (kAECoreSuite, kAEDelete,
-				       typeApplSignature,
-				       &finderSignature, sizeof (OSType),
-				       kAutoGenerateReturnID, kAnyTransactionID,
-				       &event, NULL, "'----':@", &desc);
-	      AEDisposeDesc (&desc);
-	    }
-	  if (err == noErr)
-	    {
-	      err = AESendMessage (&event, &reply,
-				   kAEWaitReply | kAENeverInteract,
-				   kAEDefaultTimeout);
-	      AEDisposeDesc (&event);
-	    }
-	  if (err == noErr)
-	    {
-	      if (reply.descriptorType != typeNull)
-		{
-		  OSStatus err1, handler_err;
-		  AEDesc desc;
-
-		  err1 = AEGetParamPtr (&reply, keyErrorNumber, typeSInt32,
-					NULL, &handler_err,
-					sizeof (OSStatus), NULL);
-		  if (err1 != errAEDescNotFound)
-		    err = handler_err;
-		  err1 = AEGetParamDesc (&reply, keyErrorString,
-					 typeUTF8Text, /* Needs 10.2 */
-					 &desc);
-		  if (err1 == noErr)
-		    {
-		      errstring =
-			make_uninit_string (AEGetDescDataSize (&desc));
-		      err1 = AEGetDescData (&desc, SDATA (errstring),
-					   SBYTES (errstring));
-		      if (err1 == noErr)
-			errstring =
-			  code_convert_string_norecord (errstring, Qutf_8, 0);
-		      else
-			errstring = Qnil;
-		      AEDisposeDesc (&desc);
-		    }
-		}
-	      AEDisposeDesc (&reply);
-	    }
-	}
-      UNBLOCK_INPUT;
+      err =
+	mac_fs_path_make_ref_do_not_follow_leaf_symlink (SDATA (encoded_file),
+							 &fref);
+      if (err == noErr)
+	/* FSPathMoveObjectToTrashSync tries to delete the destination
+	   of the specified symbolic link.  So we use
+	   FSMoveObjectToTrashSync for an FSRef created with
+	   kFSPathMakeRefDoNotFollowLeafSymlink.  */
+	err = FSMoveObjectToTrashSync (&fref, NULL,
+				       kFSFileOperationDefaultOptions);
     }
+  else
+#endif
+    {
+      const OSType finderSignature = 'MACS';
+      AEDesc desc;
+      AppleEvent event, reply;
+
+      err = mac_ae_create_desc_for_file_to_trash (SDATA (encoded_file), &desc);
+      if (err == noErr)
+	{
+	  err = AEBuildAppleEvent (kAECoreSuite, kAEDelete, typeApplSignature,
+				   &finderSignature, sizeof (OSType),
+				   kAutoGenerateReturnID, kAnyTransactionID,
+				   &event, NULL, "'----':@", &desc);
+	  AEDisposeDesc (&desc);
+	}
+      if (err == noErr)
+	{
+	  err = AESendMessage (&event, &reply, kAEWaitReply | kAENeverInteract,
+			       kAEDefaultTimeout);
+	  AEDisposeDesc (&event);
+	}
+      if (err == noErr)
+	{
+	  if (reply.descriptorType != typeNull)
+	    {
+	      OSStatus err1, handler_err;
+	      AEDesc desc;
+
+	      err1 = AEGetParamPtr (&reply, keyErrorNumber, typeSInt32, NULL,
+				    &handler_err, sizeof (OSStatus), NULL);
+	      if (err1 != errAEDescNotFound)
+		err = handler_err;
+	      err1 = AEGetParamDesc (&reply, keyErrorString,
+				     typeUTF8Text, /* Needs 10.2 */
+				     &desc);
+	      if (err1 == noErr)
+		{
+		  errstring = make_uninit_string (AEGetDescDataSize (&desc));
+		  err1 = AEGetDescData (&desc, SDATA (errstring),
+					SBYTES (errstring));
+		  if (err1 == noErr)
+		    errstring =
+		      code_convert_string_norecord (errstring, Qutf_8, 0);
+		  else
+		    errstring = Qnil;
+		  AEDisposeDesc (&desc);
+		}
+	    }
+	  AEDisposeDesc (&reply);
+	}
+    }
+  UNBLOCK_INPUT;
 
   if (err != noErr)
     {

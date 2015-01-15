@@ -1723,6 +1723,8 @@ macfont_list (frame, spec)
 				     &kCFTypeArrayCallBacks);
 	      CFRelease (lr_desc);
 	    }
+	  else
+	    descs = NULL;
 	}
       CFRelease (pat_desc);
       if (! descs)
@@ -2249,7 +2251,12 @@ macfont_draw (s, from, to, x, y, with_background)
   if (macfont_info->cgfont)
     {
       CGGlyph *glyphs = alloca (sizeof (CGGlyph) * len);
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+      CGPoint *positions = alloca (sizeof (CGPoint) * len);
+      CGFloat total_width = 0;
+#else
       CGSize *advances = alloca (sizeof (CGSize) * len);
+#endif
       CGFloat font_size = mac_font_get_size (macfont);
       CGAffineTransform atfm;
       CGFloat advance_delta = 0;
@@ -2258,6 +2265,22 @@ macfont_draw (s, from, to, x, y, with_background)
 	 || (macfont_info->antialias == MACFONT_ANTIALIAS_DEFAULT
 	     && font_size <= macfont_antialias_threshold));
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+      for (i = 0; i < len; i++)
+	{
+	  int width;
+
+	  glyphs[i] = ((XCHAR2B_BYTE1 (s->char2b + from + i) << 8)
+		       | XCHAR2B_BYTE2 (s->char2b + from + i));
+	  width = (s->padding_p ? 1
+		   : macfont_glyph_extents (s->font, glyphs[i],
+					    NULL, &advance_delta,
+					    no_antialias_p));
+	  positions[i].x = total_width + advance_delta;
+	  positions[i].y = 0;
+	  total_width += width;
+	}
+#else
       for (i = len - 1; i >= 0; i--)
 	{
 	  int width;
@@ -2272,6 +2295,7 @@ macfont_draw (s, from, to, x, y, with_background)
 	  advances[i].width = width + last_advance_delta - advance_delta;
 	  advances[i].height = 0;
 	}
+#endif
 
       CGContextScaleCTM (context, 1, -1);
       CG_SET_FILL_COLOR_WITH_GC_FOREGROUND (context, s->gc);
@@ -2289,7 +2313,11 @@ macfont_draw (s, from, to, x, y, with_background)
 	CGContextSetShouldAntialias (context, false);
 
       CGContextSetTextMatrix (context, atfm);
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+      CGContextSetTextPosition (context, x, -y);
+#else
       CGContextSetTextPosition (context, x + advance_delta, -y);
+#endif
 
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1070
       if (macfont_info->color_bitmap_p
@@ -2300,6 +2328,7 @@ macfont_draw (s, from, to, x, y, with_background)
 	{
 	  if (len > 0)
 	    {
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1050
 	      CGPoint *positions = alloca (sizeof (CGPoint) * len);
 
 	      positions[0] = CGPointZero;
@@ -2308,6 +2337,7 @@ macfont_draw (s, from, to, x, y, with_background)
 		  positions[i].x = positions[i-1].x + advances[i-1].width;
 		  positions[i].y = positions[i-1].y + advances[i-1].height;
 		}
+#endif
 	      CTFontDrawGlyphs (macfont, glyphs, positions, len, context);
 	    }
 	}
@@ -2316,9 +2346,13 @@ macfont_draw (s, from, to, x, y, with_background)
 	{
 	  CGContextSetFont (context, macfont_info->cgfont);
 	  CGContextSetFontSize (context, font_size);
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+	  CGContextShowGlyphsAtPositions (context, glyphs, positions, len);
+#else
 	  /* The symbol CGContextShowGlyphsWithAdvances seems to exist
 	     even in Mac OS X 10.2.  */
 	  CGContextShowGlyphsWithAdvances (context, glyphs, advances, len);
+#endif
 	}
     }
 
@@ -2866,27 +2900,49 @@ mac_ctfont_create_preferred_family_for_attributes (attributes)
   if (charset_string
       && (length = CFStringGetLength (charset_string)) > 0)
     {
-      CTFontRef last_resort =
-	CTFontCreateWithName (CFSTR ("LastResort"), 0, NULL);
+      CFAttributedStringRef attr_string = NULL;
+      CTLineRef ctline = NULL;
+      CFDictionaryRef attrs =
+	CFDictionaryCreate (NULL, NULL, NULL, 0,
+			    &kCFTypeDictionaryKeyCallBacks,
+			    &kCFTypeDictionaryValueCallBacks);
 
-      if (last_resort)
+      if (attrs)
 	{
-	  CTFontRef font = CTFontCreateForString (last_resort, charset_string,
-						  CFRangeMake (0, length));
+	  attr_string = CFAttributedStringCreate (NULL, charset_string, attrs);
+	  CFRelease (attrs);
+	}
+      if (attr_string)
+	{
+	  ctline = CTLineCreateWithAttributedString (attr_string);
+	  CFRelease (attr_string);
+	}
+      if (ctline)
+	{
+	  CFArrayRef runs = CTLineGetGlyphRuns (ctline);
+	  CFIndex i, nruns = CFArrayGetCount (runs);
+	  CTFontRef font;
 
-	  if (font)
+	  for (i = 0; i < nruns; i++)
 	    {
-	      result = CTFontCopyAttribute (font, kCTFontFamilyNameAttribute);
+	      CTRunRef run = CFArrayGetValueAtIndex (runs, i);
+	      CFDictionaryRef attributes = CTRunGetAttributes (run);
+	      CTFontRef font_in_run;
 
-	      if (CFStringCompare (result, CFSTR ("LastResort"), 0)
-		  == kCFCompareEqualTo)
-		{
-		  CFRelease (result);
-		  result = NULL;
-		}
-	      CFRelease (font);
+	      if (attributes == NULL)
+		break;
+	      font_in_run =
+		CFDictionaryGetValue (attributes, kCTFontAttributeName);
+	      if (font_in_run == NULL)
+		break;
+	      if (i == 0)
+		font = font_in_run;
+	      else if (!mac_ctfont_equal_in_postscript_name (font, font_in_run))
+		break;
 	    }
-	  CFRelease (last_resort);
+	  if (nruns > 0 && i == nruns)
+	    result = CTFontCopyAttribute (font, kCTFontFamilyNameAttribute);
+	  CFRelease (ctline);
 	}
     }
 
