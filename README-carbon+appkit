@@ -51,7 +51,7 @@ port including the following:
     the Emacs mailer will set up a draft buffer when you click a
     mailto: link in a Web browser.
 
-  * DictionaryService support (10.4 and later)
+  * DictionaryService support (10.4 and 10.5)
     You can look up a word under the mouse pointer in the selected
     window by typing Command-Control-D.
 

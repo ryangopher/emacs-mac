@@ -1,5 +1,5 @@
 /* Functions for GUI implemented with Cocoa AppKit on the Mac OS.
-   Copyright (C) 2008, 2009 YAMAMOTO Mitsuharu
+   Copyright (C) 2008, 2009  YAMAMOTO Mitsuharu
 
 This file is part of GNU Emacs Carbon+AppKit port.
 
@@ -1931,7 +1931,9 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
 
 - (struct frame *)emacsFrame
 {
-  return [[[self window] delegate] emacsFrame];
+  EmacsFrameController *frameController = [[self window] delegate];
+
+  return [frameController emacsFrame];
 }
 
 - (void)drawRect:(NSRect)aRect
@@ -2291,7 +2293,12 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
   mapped_modifiers = mac_mapped_modifiers (modifiers, [theEvent keyCode]);
 
   if (!(mapped_modifiers
-	& ~(mac_pass_control_to_system ? controlKey : 0)))
+	& ~(mac_pass_control_to_system ? controlKey : 0))
+      /* This is a workaround for the problem that Control-/ is not
+	 recognized on Mac OS X 10.6.  */
+      && !(!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5)
+	   && [theEvent keyCode] == 0x2C /* kVK_ANSI_Slash */
+	   && modifiers == controlKey))
     {
       keyEventsInterpreted = YES;
       rawKeyEvent = theEvent;
@@ -3277,7 +3284,12 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
 	tooSmall = YES;
     }
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+  [self setDoubleValue:0];
+  [self setKnobProportion:0];
+#else
   [self setFloatValue:0 knobProportion:0];
+#endif
   [self setEnabled:YES];
   knobSlotRect = [self rectForPart:NSScrollerKnobSlot];
   KnobRect = [self rectForPart:NSScrollerKnob];
@@ -3295,7 +3307,12 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
   if (!tooSmall)
     {
       [self setEnabled:enabled];
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+      [self setDoubleValue:floatValue];
+      [self setKnobProportion:knobProportion];
+#else
       [self setFloatValue:floatValue knobProportion:knobProportion];
+#endif
     }
   else
     {
@@ -3611,7 +3628,12 @@ x_set_toolkit_scroll_bar_thumb (bar, portion, position, whole)
       floatValue = top / (knobSlotSpan - size);
       knobProportion = size / knobSlotSpan;
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+      [scroller setDoubleValue:floatValue];
+      [scroller setKnobProportion:knobProportion];
+#else
       [scroller setFloatValue:floatValue knobProportion:knobProportion];
+#endif
       [scroller setEnabled:YES];
     }
 
@@ -4311,7 +4333,8 @@ mac_set_font_info_for_selection (f, face_id, c)
   if (mac_font_panel_visible_p () && f)
     {
       NSWindow *window = FRAME_MAC_WINDOW (f);
-      NSFont *font = [[window delegate] fontForFace:face_id character:c];
+      EmacsFrameController *frameController = [window delegate];
+      NSFont *font = [frameController fontForFace:face_id character:c];
 
       [[NSFontManager sharedFontManager] setSelectedFont:font isMultiple:NO];
     }
@@ -5109,6 +5132,7 @@ static void update_services_menu_types P_ ((void));
   else if ([theEvent type] == NSKeyDown)
     {
       NSUInteger flags = [theEvent modifierFlags];
+      UInt32 modifiers = mac_modifier_flags_to_modifiers (flags);
 
       flags &= ANY_KEY_MODIFIER_FLAGS_MASK;
 
@@ -5127,6 +5151,10 @@ static void update_services_menu_types P_ ((void));
 	  if (action)
 	    return [NSApp sendAction:action to:nil from:nil];
 	}
+
+      if ([[theEvent charactersIgnoringModifiers] length] == 1
+	  && mac_quit_char_key_p (modifiers, [theEvent keyCode]))
+	return [NSApp sendAction:@selector(cancel:) to:nil from:nil];
     }
 
   return NO;

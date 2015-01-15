@@ -1,3 +1,17 @@
+* emacs-22.3-appkit-1.6 (2009-08-29)
+
+** Fixed bugs
+
+*** Doesn't build on Mac OS X 10.6.
+
+*** Mach port right leaks due to the previous change for the warning
+"CFMessagePort: bootstrap_register(): failed".
+
+** Improvement
+
+*** File dialogs can be closed with C-g on Mac OS X 10.5 and later.
+
+
 * emacs-22.3-appkit-1.5 (2009-08-03)
 
 ** Fixed bugs

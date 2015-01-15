@@ -361,6 +361,9 @@ Boston, MA 02110-1301, USA.  */
 #define malloc unexec_malloc
 #define realloc unexec_realloc
 #define free unexec_free
+/* Don't use posix_memalign because it is not compatible with
+   unexmacosx.c.  */
+#undef HAVE_POSIX_MEMALIGN
 #endif
 
 /* This makes create_process in process.c save and restore signal

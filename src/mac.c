@@ -5619,6 +5619,7 @@ mac_service_provider_registered_p ()
   name_t name = "org.gnu.Emacs";
   CFBundleRef bundle;
   mach_port_t port;
+  kern_return_t kr;
 
   bundle = CFBundleGetMainBundle ();
   if (bundle)
@@ -5634,8 +5635,11 @@ mac_service_provider_registered_p ()
     }
   /* Mac OS X 10.1 doesn't have strlcat.  */
   strncat (name, ".ServiceProvider", sizeof (name) - strlen (name) - 1);
+  kr = bootstrap_look_up (bootstrap_port, name, &port);
+  if (kr == KERN_SUCCESS)
+    mach_port_deallocate (mach_task_self (), port);
 
-  return bootstrap_look_up (bootstrap_port, name, &port) == KERN_SUCCESS;
+  return kr == KERN_SUCCESS;
 }
 
 /* Set up environment variables so that Emacs can correctly find its

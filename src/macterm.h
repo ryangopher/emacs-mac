@@ -522,7 +522,6 @@ struct scroll_bar {
 #define SET_SCROLL_BAR_CONTROL_REF(ptr, ref)				\
   (SCROLL_BAR_UNPACK ((ptr)->control_ref_low,				\
                       (ptr)->control_ref_high, (unsigned long) (ref)))
-#endif  /* !USE_APPKIT */
 
 /* Return the inside width of a vertical scroll bar, given the outside
    width.  */
@@ -571,6 +570,7 @@ struct scroll_bar {
 
 /* Combined length of up and down arrow boxes in scroll bars, in pixels.  */
 #define UP_AND_DOWN_ARROWS (32)
+#endif  /* !USE_APPKIT */
 
 /* Trimming off a few pixels from each side prevents
    text from glomming up against the scroll bar */

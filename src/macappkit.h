@@ -1,5 +1,5 @@
 /* Definitions and headers for AppKit framework on the Mac OS.
-   Copyright (C) 2008, 2009 YAMAMOTO Mitsuharu
+   Copyright (C) 2008, 2009  YAMAMOTO Mitsuharu
 
 This file is part of GNU Emacs Carbon+AppKit port.
 
@@ -27,6 +27,9 @@ Fifth Floor, Boston, MA 02110-1301, USA.  */
 #endif
 #ifndef NSAppKitVersionNumber10_4
 #define NSAppKitVersionNumber10_4 824
+#endif
+#ifndef NSAppKitVersionNumber10_5
+#define NSAppKitVersionNumber10_5 949
 #endif
 
 #ifndef NSINTEGER_DEFINED
