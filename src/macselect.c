@@ -918,7 +918,7 @@ DEFUN ("mac-process-deferred-apple-events", Fmac_process_deferred_apple_events, 
   mac_ready_for_apple_events = 1;
 #if __LP64__ && MAC_OS_X_VERSION_MIN_REQUIRED < 1060
   {
-    UInt32 response;
+    SInt32 response;
     OSErr err;
 
     err = Gestalt (gestaltSystemVersion, &response);
@@ -1079,7 +1079,7 @@ nil, which means the event is already resumed or expired.  */)
 
 DEFUN ("mac-send-apple-event-internal", Fmac_send_apple_event_internal, Smac_send_apple_event_internal, 1, 2, 0,
        doc: /* Send APPLE-EVENT with SEND-MODE.
-This is for internal use only.  Use `mac-send-apple-event' instead.  
+This is for internal use only.  Use `mac-send-apple-event' instead.
 
 APPLE-EVENT is a Lisp representation of an Apple event.  SEND-MODE
 specifies a send mode for the Apple event.  It must be either an

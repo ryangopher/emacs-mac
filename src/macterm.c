@@ -158,6 +158,9 @@ int input_signal_count;
 /* Non-nil means update doesn't reset vscroll.  */
 int mac_redisplay_dont_reset_vscroll;
 
+/* Non-nil means momentum wheel events are ignored.  */
+int mac_ignore_momentum_wheel_events;
+
 extern Lisp_Object Vsystem_name;
 
 extern Lisp_Object Qeql;
@@ -455,7 +458,9 @@ mac_create_bitmap_from_bitmap_data (bitmap, bits, w, h)
 	}
     }
 
-  SetRect (&(bitmap->bounds), 0, 0, w, h);
+  bitmap->bounds.left = bitmap->bounds.top = 0;
+  bitmap->bounds.right = w;
+  bitmap->bounds.bottom = h;
 }
 
 
@@ -1440,6 +1445,7 @@ x_set_cursor_gc (s)
 	  xgcv.foreground = s->face->background;
 	}
 
+      IF_DEBUG (x_check_font (s->f, s->font));
       mask = GCForeground | GCBackground;
 
       if (FRAME_MAC_DISPLAY_INFO (s->f)->scratch_cursor_gc)
@@ -5038,13 +5044,12 @@ mac_get_selected_range (w, range)
 /* Store the text of the buffer BUF from START to END as Unicode
    characters in CHARACTERS.  Return non-zero if successful.  */
 
-int
+static int
 mac_store_buffer_text_to_unicode_chars (buf, start, end, characters)
      struct buffer *buf;
      EMACS_INT start, end;
      UniChar *characters;
 {
-#if 1
   EMACS_INT start_byte = buf_charpos_to_bytepos (buf, start);
 
 #define BUF_FETCH_CHAR_ADVANCE(OUTPUT, BUF, CHARIDX, BYTEIDX)	\
@@ -5076,145 +5081,107 @@ mac_store_buffer_text_to_unicode_chars (buf, start, end, characters)
     }
 
   return 1;
-#else
-  int start_byte, end_byte, char_count, byte_count;
-  struct coding_system coding;
-  unsigned char *dst = (unsigned char *) characters;
-
-  start_byte = buf_charpos_to_bytepos (buf, start);
-  end_byte = buf_charpos_to_bytepos (buf, end);
-  char_count = end - start;
-  byte_count = end_byte - start_byte;
-
-  if (setup_coding_system (
-#ifdef WORDS_BIG_ENDIAN
-			   intern ("utf-16be")
-#else
-			   intern ("utf-16le")
-#endif
-			   , &coding) < 0)
-    return 0;
-
-  coding.src_multibyte = !NILP (buf->enable_multibyte_characters);
-  coding.dst_multibyte = 0;
-  coding.mode |= CODING_MODE_LAST_BLOCK;
-  coding.composing = COMPOSITION_DISABLED;
-
-  if (BUF_GPT_BYTE (buf) <= start_byte || end_byte <= BUF_GPT_BYTE (buf))
-    encode_coding (&coding, BUF_BYTE_ADDRESS (buf, start_byte), dst,
-		   byte_count, char_count * sizeof (UniChar));
-  else
-    {
-      int first_byte_count = BUF_GPT_BYTE (buf) - start_byte;
-
-      encode_coding (&coding, BUF_BYTE_ADDRESS (buf, start_byte), dst,
-		     first_byte_count, char_count * sizeof (UniChar));
-      if (coding.result == CODING_FINISH_NORMAL)
-	encode_coding (&coding,
-		       BUF_BYTE_ADDRESS (buf, start_byte + first_byte_count),
-		       dst + coding.produced,
-		       byte_count - first_byte_count,
-		       char_count * sizeof (UniChar) - coding.produced);
-    }
-
-  if (coding.result != CODING_FINISH_NORMAL)
-    return 0;
-
-  return 1;
-#endif
 }
 
-/* Find the glyph matrix position of buffer position CHARPOS in window
-   *W.  HPOS, *VPOS, *X, and *Y are set to the positions found.  W's
-   current glyphs must be up to date.  If CHARPOS is above window
-   start return (0, 0, 0, 0).  If CHARPOS is after end of W, return end
-   of last line in W.  In the row containing CHARPOS, stop before glyphs
-   having STOP as object.  */
-
-int
-fast_find_position (w, charpos, hpos, vpos, x, y, stop)
+CGRect
+mac_get_first_rect_for_range (w, range, actual_range)
      struct window *w;
-     EMACS_INT charpos;
-     int *hpos, *vpos, *x, *y;
-     Lisp_Object stop;
+     const CFRange *range;
+     CFRange *actual_range;
 {
+  struct buffer *b = XBUFFER (w->buffer);
+  EMACS_INT start_charpos, end_charpos, max_charpos = 0;
   struct glyph_row *row, *first;
   struct glyph *glyph, *end;
-  int past_end = 0;
+  int x, left_x, right_x, text_area_width;
+
+  start_charpos = BUF_BEGV (b) + range->location;
+  end_charpos = start_charpos + range->length;
 
   first = MATRIX_FIRST_TEXT_ROW (w->current_matrix);
-  if (charpos < MATRIX_ROW_START_CHARPOS (first))
+  if (start_charpos < MATRIX_ROW_START_CHARPOS (first))
     {
-      *x = first->x;
-      *y = first->y;
-      *hpos = 0;
-      *vpos = MATRIX_ROW_VPOS (first, w->current_matrix);
-      return 1;
+      row = first;
+      x = row->x;
+      glyph = row->glyphs[TEXT_AREA];
+
+      if (MATRIX_ROW_START_CHARPOS (first) < end_charpos)
+	start_charpos = MATRIX_ROW_START_CHARPOS (first);
+      else
+	max_charpos = start_charpos;
     }
-
-  row = row_containing_pos (w, charpos, first, NULL, 0);
-  if (row == NULL)
+  else
     {
-      row = MATRIX_ROW (w->current_matrix, XFASTINT (w->window_end_vpos));
-      past_end = 1;
+      row = row_containing_pos (w, start_charpos, first, NULL, 0);
+      if (row == NULL)
+	row = MATRIX_ROW (w->current_matrix, XFASTINT (w->window_end_vpos));
+      x = row->x;
+      glyph = row->glyphs[TEXT_AREA];
+      end = glyph + row->used[TEXT_AREA];
+
+      /* Skip truncation glyphs at the start of the glyph row.  */
+      if (row->displays_text_p)
+	for (; glyph < end
+	       && INTEGERP (glyph->object)
+	       && glyph->charpos < 0;
+	     ++glyph)
+	  x += glyph->pixel_width;
+
+      /* Scan the glyph row, stopping before START_CHARPOS.  */
+      for (; glyph < end
+	     && !INTEGERP (glyph->object)
+	     && !(BUFFERP (glyph->object) && glyph->charpos >= start_charpos);
+	   ++glyph)
+	x += glyph->pixel_width;
+
+      if (glyph < end && !STRINGP (glyph->object)
+	  && start_charpos < glyph->charpos && glyph->charpos < end_charpos)
+	start_charpos = glyph->charpos;
     }
+  left_x = x;
 
-  /* If whole rows or last part of a row came from a display overlay,
-     row_containing_pos will skip over such rows because their end pos
-     equals the start pos of the overlay or interval.
-
-     Move back if we have a STOP object and previous row's
-     end glyph came from STOP.  */
-  if (!NILP (stop))
+  if (max_charpos > 0)
+    right_x = left_x;
+  else if (MATRIX_ROW_END_CHARPOS (row) <= end_charpos)
     {
-      struct glyph_row *prev;
-      while ((prev = row - 1, prev >= first)
-	     && MATRIX_ROW_END_CHARPOS (prev) == charpos
-	     && prev->used[TEXT_AREA] > 0)
+      max_charpos = MATRIX_ROW_END_CHARPOS (row);
+      right_x = INT_MAX;
+    }
+  else
+    {
+      /* Scan the glyph row, stopping at END_CHARPOS.  */
+      max_charpos = start_charpos;
+      for (; glyph < end
+	     && !INTEGERP (glyph->object)
+	     && !(BUFFERP (glyph->object) && glyph->charpos >= end_charpos);
+	   ++glyph)
 	{
-	  struct glyph *beg = prev->glyphs[TEXT_AREA];
-	  glyph = beg + prev->used[TEXT_AREA];
-	  while (--glyph >= beg
-		 && INTEGERP (glyph->object));
-	  if (glyph < beg
-	      || !EQ (stop, glyph->object))
-	    break;
-	  row = prev;
+	  if (BUFFERP (glyph->object))
+	    max_charpos = glyph->charpos + 1;
+	  x += glyph->pixel_width;
 	}
+      right_x = x;
     }
 
-  *x = row->x;
-  *y = row->y;
-  *vpos = MATRIX_ROW_VPOS (row, w->current_matrix);
-
-  glyph = row->glyphs[TEXT_AREA];
-  end = glyph + row->used[TEXT_AREA];
-
-  /* Skip over glyphs not having an object at the start of the row.
-     These are special glyphs like truncation marks on terminal
-     frames.  */
-  if (row->displays_text_p)
-    while (glyph < end
-	   && INTEGERP (glyph->object)
-	   && !EQ (stop, glyph->object)
-	   && glyph->charpos < 0)
-      {
-	*x += glyph->pixel_width;
-	++glyph;
-      }
-
-  while (glyph < end
-	 && !INTEGERP (glyph->object)
-	 && !EQ (stop, glyph->object)
-	 && (!BUFFERP (glyph->object)
-	     || glyph->charpos < charpos))
+  if (actual_range)
     {
-      *x += glyph->pixel_width;
-      ++glyph;
+      actual_range->location = start_charpos - BUF_BEGV (b);
+      actual_range->length = max_charpos - start_charpos;
     }
 
-  *hpos = glyph - row->glyphs[TEXT_AREA];
-  return !past_end;
+  text_area_width = window_box_width (w, TEXT_AREA);
+  if (left_x < 0)
+    left_x = 0;
+  else if (left_x > text_area_width)
+    left_x = text_area_width;
+  if (right_x < 0)
+    right_x = 0;
+  else if (right_x > text_area_width)
+    right_x = text_area_width;
+
+  return CGRectMake (WINDOW_TEXT_TO_FRAME_PIXEL_X (w, left_x),
+		     WINDOW_TO_FRAME_PIXEL_Y (w, row->y),
+		     right_x - left_x, row->height);
 }
 
 void
@@ -5565,7 +5532,7 @@ do_keystroke (action, char_code, key_code, modifiers, timestamp, buf)
 	  UInt32 modifier_key_state =
 	    (modifiers & ~mapped_modifiers & ~alphaLock) >> 8;
 	  UInt32 keyboard_type = LMGetKbdType ();
-	  SInt32 dead_key_state = 0;
+	  UInt32 dead_key_state = 0;
 	  UniChar code;
 	  UniCharCount actual_length;
 
@@ -6181,6 +6148,10 @@ baseline level.  The default value is nil.  */);
   DEFVAR_BOOL ("mac-redisplay-dont-reset-vscroll", &mac_redisplay_dont_reset_vscroll,
 	       doc: /* Non-nil means update doesn't reset vscroll.  */);
   mac_redisplay_dont_reset_vscroll = 0;
+
+  DEFVAR_BOOL ("mac-ignore-momentum-wheel-events", &mac_ignore_momentum_wheel_events,
+	       doc: /* Non-nil means momentum wheel events are ignored.  */);
+  mac_ignore_momentum_wheel_events = 0;
 
 /* Variables to configure modifier key assignment.  */
 

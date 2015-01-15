@@ -100,6 +100,18 @@ enum {
    | CFOBJECT_TO_LISP_DONT_DECODE_STRING			\
    | CFOBJECT_TO_LISP_DONT_DECODE_DICTIONARY_KEY)
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+#define CA_LAYER	CALayer
+#define CA_TRANSACTION	CATransaction
+#define CA_BASIC_ANIMATION CABasicAnimation
+#define CA_TRANSITION	CATransition
+#else
+#define CA_LAYER	(NSClassFromString (@"CALayer"))
+#define CA_TRANSACTION	(NSClassFromString (@"CATransaction"))
+#define CA_BASIC_ANIMATION (NSClassFromString (@"CABasicAnimation"))
+#define CA_TRANSITION	(NSClassFromString (@"CATransition"))
+#endif
+
 #if MAC_OS_X_VERSION_MAX_ALLOWED < 1050
 INLINE NSRect
 NSRectFromCGRect (cgrect)
@@ -117,6 +129,42 @@ NSRectToCGRect (nsrect)
   union _ {NSRect ns; CGRect cg;};
 
   return ((union _ *) &nsrect)->cg;
+}
+
+INLINE NSPoint
+NSPointFromCGPoint (cgpoint)
+     CGPoint cgpoint;
+{
+  union _ {NSPoint ns; CGPoint cg;};
+
+  return ((union _ *) &cgpoint)->ns;
+}
+
+INLINE CGPoint
+NSPointToCGPoint (nspoint)
+     NSPoint nspoint;
+{
+  union _ {NSPoint ns; CGPoint cg;};
+
+  return ((union _ *) &nspoint)->cg;
+}
+
+INLINE NSSize
+NSSizeFromCGSize (cgsize)
+     CGSize cgsize;
+{
+  union _ {NSSize ns; CGSize cg;};
+
+  return ((union _ *) &cgsize)->ns;
+}
+
+INLINE CGSize
+NSSizeToCGSize (nssize)
+     NSSize nssize;
+{
+  union _ {NSSize ns; CGSize cg;};
+
+  return ((union _ *) &nssize)->cg;
 }
 #endif
 
@@ -309,7 +357,10 @@ NSRectToCGRect (nsrect)
 {
   NSImage *image;
 
-  if ([NSBitmapImageRep instancesRespondToSelector:@selector(initWithCGImage:)])
+  if ([self instancesRespondToSelector:@selector(initWithCGImage:size:)])
+    image = [[self alloc] initWithCGImage:cgImage size:NSZeroSize];
+  else if ([NSBitmapImageRep
+	     instancesRespondToSelector:@selector(initWithCGImage:)])
     {
       NSBitmapImageRep *rep =
 	[[NSBitmapImageRep alloc] initWithCGImage:cgImage];
@@ -1032,7 +1083,7 @@ extern UInt32 mac_mapped_modifiers P_ ((UInt32, UInt32));
 #endif
 }
 
-/* Delegete Methods  */
+/* Delegate Methods  */
 
 - (void)applicationWillFinishLaunching:(NSNotification *)notification
 {
@@ -1076,6 +1127,15 @@ extern UInt32 mac_mapped_modifiers P_ ((UInt32, UInt32));
   /* Exit from the main event loop.  */
   [NSApp stop:nil];
   [NSApp postDummyEvent];
+}
+
+- (void)applicationDidBecomeActive:(NSNotification *)notification
+{
+  if (needsUpdatePresentationOptionsOnBecomingActive)
+    {
+      [self updatePresentationOptions];
+      needsUpdatePresentationOptionsOnBecomingActive = NO;
+    }
 }
 
 - (void)antialiasThresholdDidChange:(NSNotification *)notification
@@ -1575,6 +1635,13 @@ emacs_windows_need_display_p ()
 {
   NSWindow *window = [NSApp keyWindow];
 
+  if (![NSApp isActive])
+    {
+      needsUpdatePresentationOptionsOnBecomingActive = YES;
+
+      return;
+    }
+
   if ([window isKindOfClass:[EmacsWindow class]])
     {
       EmacsFrameController *frameController = [window delegate];
@@ -2059,6 +2126,11 @@ extern void mac_save_keyboard_input_source P_ ((void));
     [overlayView setShowsResizeIndicator:YES];
 
   overlayWindow = window;
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
+  if (NSClassFromString (@"CALayer"))
+    [self setupLayerHostingView];
+#endif
 }
 
 - (void)setupWindow
@@ -2189,6 +2261,9 @@ extern void mac_save_keyboard_input_source P_ ((void));
 {
   [emacsView release];
   [hourglass release];
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
+  [layerHostingView release];
+#endif
   [overlayView release];
   [overlayWindow release];
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1060
@@ -2898,13 +2973,11 @@ extern void mac_save_keyboard_input_source P_ ((void));
   bitmap = [frameView bitmapImageRepForCachingDisplayInRect:frameViewRect];
   [frameView cacheDisplayInRect:frameViewRect toBitmapImageRep:bitmap];
 
-#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
-  layer = [CALayer layer];
-#else
-  layer = [(NSClassFromString (@"CALayer")) layer];
-#endif
-  layer.bounds = CGRectMake (0, 0, [bitmap pixelsWide], [bitmap pixelsHigh]);
+  layer = [CA_LAYER layer];
+  layer.bounds = CGRectMake (0, 0, NSWidth (frameViewRect),
+			     NSHeight (frameViewRect));
   layer.contents = (id) [bitmap CGImage];
+  layer.contentsScale = [transitionWindow backingScaleFactor];
   layer.contentsGravity = kCAGravityTopLeft;
   transitionContentView = [transitionWindow contentView];
   [transitionContentView setLayer:layer];
@@ -2944,6 +3017,8 @@ extern void mac_save_keyboard_input_source P_ ((void));
 
   [emacsController updatePresentationOptions];
   [self updateCollectionBehavior];
+  /* This is a workaround.  */
+  [overlayWindow orderFront:nil];
 }
 
 - (NSArray *)customWindowsToEnterFullScreenForWindow:(NSWindow *)window
@@ -3298,6 +3373,18 @@ mac_set_frame_window_alpha (f, alpha)
   return noErr;
 }
 
+OSStatus
+mac_get_frame_window_alpha (f, out_alpha)
+     struct frame *f;
+     CGFloat *out_alpha;
+{
+  NSWindow *window = (__bridge id) FRAME_MAC_WINDOW (f);
+
+  *out_alpha = [window alphaValue];
+
+  return noErr;
+}
+
 void
 mac_get_window_structure_bounds (f, bounds)
      struct frame *f;
@@ -3619,10 +3706,8 @@ static int executing_applescript_p;
 extern int mac_get_emulated_btn P_ ((UInt32));
 extern int mac_to_emacs_modifiers P_ ((UInt32, UInt32));
 
-extern int fast_find_position P_ ((struct window *, EMACS_INT, int *, int *,
-				   int *, int *, Lisp_Object));
-extern struct glyph *x_y_to_hpos_vpos P_ ((struct window *, int, int,
-					   int *, int *, int *, int *, int *));
+extern CGRect mac_get_first_rect_for_range P_ ((struct window *,
+						const CFRange *, CFRange *));
 
 static int mac_get_mouse_btn P_ ((NSEvent *));
 static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
@@ -4101,6 +4186,9 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
 
 - (void)cursorUpdate:(NSEvent *)event
 {
+#if __LP64__
+  extern OSStatus SetThemeCursor P_ ((ThemeCursor));
+#endif
   struct frame *f = [self emacsFrame];
 
   SetThemeCursor (f->output_data.mac->current_cursor);
@@ -4470,32 +4558,72 @@ extern CFStringRef mac_ax_string_for_range P_ ((struct frame *,
 		MRC_AUTORELEASE ([[NSMutableAttributedString alloc]
 				   initWithString:((__bridge NSString *)
 						   string)]);
-	      NSUInteger i;
+	      int last_face_id = DEFAULT_FACE_ID;
+	      NSFont *lastFont =
+		[NSFont fontWithFace:(FACE_FROM_ID (f, last_face_id))];
+	      EMACS_INT start_charpos, end_charpos;
+	      struct glyph_row *r1, *r2;
 
+	      start_charpos = BUF_BEGV (b) + range.location;
+	      end_charpos = start_charpos + range.length;
 	      [attributedString beginEditing];
-	      for (i = 0; i < range.length; i++)
+	      [attributedString addAttribute:NSFontAttributeName
+				       value:lastFont
+				       range:(NSMakeRange (0, range.length))];
+	      r2 = MATRIX_FIRST_TEXT_ROW (w->current_matrix);
+	      r1 = row_containing_pos (w, start_charpos, r2, NULL, 0);
+	      if (r1)
+		r2 = r1;
+	      r2 = row_containing_pos (w, end_charpos - 1, r2, NULL, 0);
+	      if (r1 == NULL || r2 == NULL)
 		{
-		  NSFont *font = nil;
-		  int hpos, vpos, x, y;
-		  struct glyph_row *row;
-		  struct glyph *glyph;
+		  struct glyph_row *first, *last;
 
-		  fast_find_position (w, BUF_BEGV (b) + range.location + i,
-				      &hpos, &vpos, &x, &y, Qnil);
-		  row = MATRIX_ROW (w->current_matrix, vpos);
-		  glyph = row->glyphs[TEXT_AREA] + hpos;
-		  if (glyph->charpos == BUF_BEGV (b) + range.location + i
-		      && glyph->type == CHAR_GLYPH
-		      && !glyph->glyph_not_available_p)
-		    font = [NSFont fontWithFace:(FACE_FROM_ID
-						 (f, glyph->face_id))];
-		  if (font == nil)
-		    font = [NSFont fontWithFace:(FACE_FROM_ID
-						 (f, DEFAULT_FACE_ID))];
-		  [attributedString addAttribute:NSFontAttributeName
-					   value:font
-					   range:(NSMakeRange (i, 1))];
+		  first = MATRIX_FIRST_TEXT_ROW (w->current_matrix);
+		  last = MATRIX_ROW (w->current_matrix,
+				     XFASTINT (w->window_end_vpos));
+		  if (start_charpos <= MATRIX_ROW_END_CHARPOS (last)
+		      && end_charpos > MATRIX_ROW_START_CHARPOS (first))
+		    {
+		      if (r1 == NULL)
+			r1 = first;
+		      if (r2 == NULL)
+			r2 = last;
+		    }
 		}
+	      if (r1 && r2)
+		for (; r1 <= r2; r1++)
+		  {
+		    struct glyph *glyph;
+
+		    for (glyph = r1->glyphs[TEXT_AREA];
+			 glyph < r1->glyphs[TEXT_AREA] + r1->used[TEXT_AREA];
+			 glyph++)
+		      if (BUFFERP (glyph->object)
+			  && glyph->charpos >= start_charpos
+			  && glyph->charpos < end_charpos
+			  && (glyph->type == CHAR_GLYPH
+			      || glyph->type == COMPOSITE_GLYPH)
+			  && !glyph->glyph_not_available_p)
+			{
+			  NSRange attributeRange =
+			    (glyph->type == CHAR_GLYPH
+			     ? NSMakeRange (glyph->charpos - start_charpos, 1)
+			     : [[attributedString string]
+				 rangeOfComposedCharacterSequenceAtIndex:(glyph->charpos - start_charpos)]);
+
+			  if (last_face_id != glyph->face_id)
+			    {
+			      last_face_id = glyph->face_id;
+			      lastFont =
+				[NSFont fontWithFace:(FACE_FROM_ID
+						      (f, last_face_id))];
+			    }
+			  [attributedString addAttribute:NSFontAttributeName
+						   value:lastFont
+						   range:attributeRange];
+			}
+		  }
 	      [attributedString endEditing];
 	      result = attributedString;
 
@@ -4608,42 +4736,10 @@ extern CFStringRef mac_ax_string_for_range P_ ((struct frame *,
       if (EQ (w->window_end_valid, w->buffer)
 	  && XINT (w->last_modified) == BUF_MODIFF (b)
 	  && XINT (w->last_overlay_modified) == BUF_OVERLAY_MODIFF (b))
-	{
-	  EMACS_INT last_charpos, charpos = BUF_BEGV (b) + aRange.location;
-	  struct glyph *end;
-	  int width = 0;
-
-	  fast_find_position (w, charpos, &hpos, &vpos, &x, &y, Qnil);
-	  row = MATRIX_ROW (w->current_matrix, vpos);
-	  glyph = row->glyphs[TEXT_AREA] + hpos;
-	  if (charpos < glyph->charpos
-	      && glyph->charpos < charpos + aRange.length)
-	    {
-	      aRange.location += glyph->charpos - charpos;
-	      aRange.length -= glyph->charpos - charpos;
-	      charpos = glyph->charpos;
-	    }
-	  end = row->glyphs[TEXT_AREA] + row->used[TEXT_AREA];
-
-	  last_charpos = charpos;
-	  while (glyph < end
-		 && !INTEGERP (glyph->object)
-		 && (!BUFFERP (glyph->object)
-		     || glyph->charpos < charpos + aRange.length))
-	    {
-	      if (BUFFERP (glyph->object))
-		last_charpos = glyph->charpos;
-	      width += glyph->pixel_width;
-	      ++glyph;
-	    }
-
-	  rect = NSMakeRect (WINDOW_TEXT_TO_FRAME_PIXEL_X (w, x),
-			     WINDOW_TO_FRAME_PIXEL_Y (w, y),
-			     width, row->height);
-	  if (actualRange)
-	    *actualRange = NSMakeRange (aRange.location,
-					last_charpos - charpos);
-	}
+	rect = NSRectFromCGRect (mac_get_first_rect_for_range (w, ((CFRange *)
+								   &aRange),
+							       ((CFRange *)
+								actualRange)));
     }
 
   if (actualRange && NSEqualRects (rect, NSZeroRect))
@@ -6313,20 +6409,25 @@ enum {
 
 - (void)changeFont:(id)sender
 {
-  NSEvent *currentEvent = [NSApp currentEvent];
-  NSFont *oldFont = [self fontForFace:DEFAULT_FACE_ID character:0
-			  position:-1 object:Qnil];
-  NSFont *newFont = [sender convertFont:oldFont];
+  EmacsFontPanel *fontPanel = (EmacsFontPanel *) [sender fontPanel:NO];
+  NSEvent *currentEvent;
+  NSFont *oldFont, *newFont;
   Lisp_Object arg = Qnil;
   struct input_event inev;
 
+  /* This might look strange, but can happen on Mac OS X 10.5 and
+     later inside [fontPanel makeFirstResponder:accessoryView] (in
+     mac_font_dialog) if the panel is shown for the first time.  */
+  if ([[fontPanel delegate] isMemberOfClass:[EmacsFontDialogController class]])
+    return;
+
+  currentEvent = [NSApp currentEvent];
   if ([currentEvent type] == NSLeftMouseDragged)
-    {
-      EmacsFontPanel *fontPanel = (EmacsFontPanel *) [sender fontPanel:NO];
+    [fontPanel suspendSliderTracking:currentEvent];
 
-      [fontPanel suspendSliderTracking:currentEvent];
-    }
-
+  oldFont = [self fontForFace:DEFAULT_FACE_ID character:0 position:-1
+		       object:Qnil];
+  newFont = [sender convertFont:oldFont];
   if (newFont)
     arg = Fcons (Fcons (Qfont_spec,
 			Fcons (build_string ("Lisp"),
@@ -9175,8 +9276,8 @@ static void
 handle_services_invocation (invocation)
      NSInvocation *invocation;
 {
-  NSPasteboard *pboard;
-  NSString *userData;
+  __unsafe_unretained NSPasteboard *pboard;
+  __unsafe_unretained NSString *userData;
   /* NSString **error; */
   BOOL result;
 
@@ -9296,7 +9397,7 @@ static void
 handle_action_invocation (invocation)
      NSInvocation *invocation;
 {
-  id sender;
+  __unsafe_unretained id sender;
   Lisp_Object arg = Qnil;
   struct input_event inev;
   NSString *name = NSStringFromSelector ([invocation selector]);
@@ -9702,6 +9803,7 @@ extern Lisp_Object Qaccessibility, Qwindow;
 
 extern EMACS_INT mac_ax_line_for_index P_ ((struct frame *, EMACS_INT));
 extern int mac_ax_range_for_line P_ ((struct frame *, EMACS_INT, CFRange *));
+extern void mac_ax_visible_character_range P_ ((struct frame *, CFRange *));
 
 static id ax_get_value P_ ((EmacsView *));
 static id ax_get_selected_text P_ ((EmacsView *));
@@ -10202,30 +10304,26 @@ ax_get_bounds_for_range (emacsView, parameter)
      id parameter;
 {
   NSRange range = [(NSValue *)parameter rangeValue];
-  NSRect rect = NSZeroRect;
+  NSRect rect;
 
-  while (1)
+  if (range.location >= NSNotFound)
+    rect = [emacsView firstRectForCharacterRange:range];
+  else
     {
       NSRange actualRange;
-      NSRect firstRect = [emacsView firstRectForCharacterRange:range
-						   actualRange:&actualRange];
 
-      if (NSWidth (rect) == 0 && NSHeight (rect) == 0)
-	rect = firstRect;
-      else
-	rect = NSUnionRect (rect, firstRect);
-      if ((range.length == 0 && actualRange.length == 0)
-	  || NSEqualRects (firstRect, NSZeroRect))
-	break;
-      if (actualRange.length > 0)
+      rect = [emacsView firstRectForCharacterRange:range
+				       actualRange:&actualRange];
+      while (actualRange.length > 0
+	     && NSMaxRange (actualRange) < NSMaxRange (range))
 	{
-	  range.length -= NSMaxRange (actualRange) - range.location;
-	  range.location = NSMaxRange (actualRange);
-	}
-      else
-	{
-	  range.length--;
-	  range.location++;
+	  NSRect rect1;
+
+	  range = NSMakeRange (NSMaxRange (actualRange),
+			       NSMaxRange (range) - NSMaxRange (actualRange));
+	  rect1 = [emacsView firstRectForCharacterRange:range
+					    actualRange:&actualRange];
+	  rect = NSUnionRect (rect, rect1);
 	}
     }
 
@@ -10353,6 +10451,507 @@ mac_update_accessibility_status (f)
 
   [frameController postAccessibilityNotificationsToEmacsView];
 }
+
+
+/***********************************************************************
+			      Animation
+***********************************************************************/
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
+extern Lisp_Object QCdirection, QCduration;
+extern Lisp_Object Qup, Qdown, Qnone, Qfade_in, Qmove_in;
+extern Lisp_Object Qbars_swipe, Qcopy_machine, Qdissolve, Qflash, Qmod;
+extern Lisp_Object Qpage_curl, Qpage_curl_with_shadow, Qripple, Qswipe;
+
+@implementation EmacsFrameController (Animation)
+
+- (void)setupLayerHostingView
+{
+  CALayer *rootLayer = [CA_LAYER layer];
+  CGFloat scaleFactor = [overlayWindow userSpaceScaleFactor];
+
+  layerHostingView = [[NSView alloc] initWithFrame:[overlayView frame]];
+  [layerHostingView setAutoresizingMask:(NSViewWidthSizable
+					 | NSViewHeightSizable)];
+  rootLayer.anchorPoint = CGPointZero;
+  rootLayer.sublayerTransform =
+    CATransform3DMakeScale (scaleFactor, scaleFactor, 1.0);
+  [layerHostingView setLayer:rootLayer];
+  [layerHostingView setWantsLayer:YES];
+
+  [overlayView addSubview:layerHostingView];
+}
+
+- (CALayer *)layerForRect:(NSRect)rect
+{
+  struct frame *f = emacsFrame;
+  NSWindow *window = (__bridge id) FRAME_MAC_WINDOW (f);
+  NSView *contentView = [window contentView];
+  NSRect rectInContentView = [emacsView convertRect:rect toView:contentView];
+  NSBitmapImageRep *bitmap =
+    [contentView bitmapImageRepForCachingDisplayInRect:rectInContentView];
+  CALayer *layer, *contentLayer;
+
+  [contentView cacheDisplayInRect:rectInContentView toBitmapImageRep:bitmap];
+
+  layer = [CA_LAYER layer];
+  contentLayer = [CA_LAYER layer];
+  layer.frame = NSRectToCGRect (rectInContentView);
+  layer.masksToBounds = YES;
+  contentLayer.frame = CGRectMake (0, 0, NSWidth (rectInContentView),
+				   NSHeight (rectInContentView));
+  contentLayer.contents = (id) [bitmap CGImage];
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5)
+    [contentLayer setValue:bitmap forKey:@"bitmapImageRep"];
+  [layer addSublayer:contentLayer];
+
+  return layer;
+}
+
+- (void)addLayer:(CALayer *)layer
+{
+  [CA_TRANSACTION setValue:((id) kCFBooleanTrue)
+		    forKey:kCATransactionDisableActions];
+  [[layerHostingView layer] addSublayer:layer];
+  [CA_TRANSACTION flush];
+}
+
+static Lisp_Object
+get_symbol_from_filter_input_key (key)
+     NSString *key;
+{
+  NSArray *components =
+    [key componentsSeparatedByCamelCasingWithCharactersInSet:nil];
+  NSUInteger count = [components count];
+
+  if (count > 1 && [[components objectAtIndex:0] isEqualToString:@"input"])
+    {
+      NSMutableArray *symbolComponents =
+	[NSMutableArray arrayWithCapacity:(count - 1)];
+      NSUInteger index;
+      Lisp_Object string;
+
+      for (index = 1; index < count; index++)
+	[symbolComponents addObject:[[components objectAtIndex:index]
+				      lowercaseString]];
+      string = [[symbolComponents componentsJoinedByString:@"-"]
+		 UTF8LispString];
+      return Fintern (concat2 (build_string (":"), string), Qnil);
+    }
+  else
+    return Qnil;
+}
+
+- (CIFilter *)transitionFilterFromProperties:(Lisp_Object)properties
+{
+  struct frame *f = emacsFrame;
+  NSString *filterName;
+  CIFilter *filter;
+  NSDictionary *attributes;
+  Lisp_Object type = Fplist_get (properties, QCtype);
+
+  if (EQ (type, Qbars_swipe))
+    filterName = @"CIBarsSwipeTransition";
+  else if (EQ (type, Qcopy_machine))
+    filterName = @"CICopyMachineTransition";
+  else if (EQ (type, Qdissolve))
+    filterName = @"CIDissolveTransition";
+  else if (EQ (type, Qflash))
+    filterName = @"CIFlashTransition";
+  else if (EQ (type, Qmod))
+    filterName = @"CIModTransition";
+  else if (EQ (type, Qpage_curl))
+    filterName = @"CIPageCurlTransition";
+  else if (EQ (type, Qpage_curl_with_shadow))
+    {
+      if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_6)
+	filterName = @"CIPageCurlTransition";
+      else
+	filterName = @"CIPageCurlWithShadowTransition";
+    }
+  else if (EQ (type, Qripple))
+    filterName = @"CIRippleTransition";
+  else if (EQ (type, Qswipe))
+    filterName = @"CISwipeTransition";
+  else
+    return nil;
+
+  filter = [CIFilter filterWithName:filterName];
+  [filter setDefaults];
+  if (EQ (type, Qbars_swipe)		   /* [0, 2pi], default pi */
+      || EQ (type, Qcopy_machine)	   /* [0, 2pi], default 0 */
+      || EQ (type, Qpage_curl)		   /* [-pi, pi], default 0 */
+      || EQ (type, Qpage_curl_with_shadow) /* [-pi, pi], default 0 */
+      || EQ (type, Qswipe))		   /* [-pi, pi], default 0 */
+    {
+      Lisp_Object direction = Fplist_get (properties, QCdirection);
+      double direction_angle;
+
+      if (EQ (direction, Qleft))
+	direction_angle = M_PI;
+      else if (EQ (direction, Qright))
+	direction_angle = 0;
+      else if (EQ (direction, Qdown))
+	{
+	  if (EQ (type, Qbars_swipe) || EQ (type, Qcopy_machine))
+	    direction_angle = 3 * M_PI_2;
+	  else
+	    direction_angle = - M_PI_2;
+	}
+      else if (EQ (direction, Qup))
+	direction_angle = M_PI_2;
+      else
+	direction = Qnil;
+
+      if (!NILP (direction))
+	[filter setValue:[NSNumber numberWithDouble:direction_angle]
+		  forKey:kCIInputAngleKey];
+    }
+
+  if ([filterName isEqualToString:@"CIPageCurlTransition"]
+      || EQ (type, Qripple))
+    /* TODO: create a real shading image like
+       /Library/Widgets/CI Filter Browser.wdgt/Images/restrictedshine.png */
+    [filter setValue:[CIImage emptyImage] forKey:kCIInputShadingImageKey];
+
+  attributes = [filter attributes];
+  for (NSString *key in [filter inputKeys])
+    {
+      NSDictionary *keyAttributes = [attributes objectForKey:key];
+
+      if ([[keyAttributes objectForKey:kCIAttributeClass]
+	    isEqualToString:@"NSNumber"]
+	  && ![key isEqualToString:kCIInputTimeKey])
+	{
+	  Lisp_Object symbol = get_symbol_from_filter_input_key (key);
+
+	  if (!NILP (symbol))
+	    {
+	      Lisp_Object value = Fplist_get (properties, symbol);
+
+	      if (NUMBERP (value))
+		[filter setValue:[NSNumber numberWithDouble:(XFLOATINT (value))]
+			  forKey:key];
+	    }
+	}
+      else if ([[keyAttributes objectForKey:kCIAttributeType]
+		 isEqualToString:kCIAttributeTypeOpaqueColor])
+	{
+	  Lisp_Object symbol = get_symbol_from_filter_input_key (key);
+
+	  if (!NILP (symbol))
+	    {
+	      Lisp_Object value = Fplist_get (properties, symbol);
+	      CGFloat components[3];
+	      int i;
+
+	      if (STRINGP (value))
+		{
+		  XColor xcolor;
+
+		  if (mac_defined_color (f, SDATA (value), &xcolor, 0))
+		    value = list3 (make_number (xcolor.red),
+				   make_number (xcolor.green),
+				   make_number (xcolor.blue));
+		}
+	      for (i = 0; i < 3; i++)
+		{
+		  if (!CONSP (value))
+		    break;
+		  if (INTEGERP (XCAR (value)))
+		    components[i] =
+		      min (max (0, XINT (XCAR (value)) / 65535.0), 1);
+		  else if (FLOATP (XCAR (value)))
+		    components[i] =
+		      min (max (0, XFLOAT_DATA (XCAR (value))), 1);
+		  else
+		    break;
+		  value = XCDR (value);
+		}
+	      if (i == 3 && NILP (value))
+		[filter setValue:[CIColor colorWithRed:components[0]
+						 green:components[1]
+						  blue:components[2]]
+			  forKey:key];
+	    }
+	}
+    }
+
+  return filter;
+}
+
+- (void)adjustTransitionFilter:(CIFilter *)filter forLayer:(CALayer *)layer
+{
+  CGFloat scaleFactor = [overlayWindow userSpaceScaleFactor];
+  NSDictionary *attributes = [filter attributes];
+
+  if ([[[attributes objectForKey:kCIInputCenterKey]
+	 objectForKey:kCIAttributeType]
+	isEqualToString:kCIAttributeTypePosition])
+    {
+      CGPoint center = [layer position];
+
+      [filter setValue:[CIVector vectorWithX:(center.x * scaleFactor)
+					   Y:(center.y * scaleFactor)]
+		forKey:kCIInputCenterKey];
+    }
+
+  if ([[attributes objectForKey:kCIAttributeFilterName]
+	isEqualToString:@"CIPageCurlWithShadowTransition"]
+      /* Mac OS X 10.7 automatically sets inputBacksideImage for
+	 CIPageCurlTransition.  */
+      || (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_6
+	  && [[attributes objectForKey:kCIAttributeFilterName]
+	       isEqualToString:@"CIPageCurlTransition"]))
+    {
+      CGRect frame = layer.frame;
+      CGAffineTransform atfm =
+	CGAffineTransformMakeTranslation (CGRectGetMinX (frame) * scaleFactor,
+					  CGRectGetMinY (frame) * scaleFactor);
+      CALayer *contentLayer = [[layer sublayers] objectAtIndex:0];
+      CIImage *image;
+
+      if ([overlayWindow respondsToSelector:@selector(backingScaleFactor)])
+	{
+	  CGFloat scale = 1.0 / [overlayWindow backingScaleFactor];
+
+	  atfm = CGAffineTransformScale (atfm, scale, scale);
+	}
+
+      if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5)
+	{
+	  /* +[CIImage imageWithCGImage:] for inputBacksideImage
+	     causes crash when drawing on Mac OS X 10.5.  */
+	  NSBitmapImageRep *bitmap = [contentLayer
+				       valueForKey:@"bitmapImageRep"];
+#undef Z
+	  CIVector *extent =
+	    [CIVector vectorWithX:(CGRectGetMinX (frame) * scaleFactor)
+				Y:(CGRectGetMinY (frame) * scaleFactor)
+				Z:(CGRectGetWidth (frame) * scaleFactor)
+				W:(CGRectGetHeight (frame) * scaleFactor)];
+#define Z (current_buffer->text->z)
+
+	  [filter setValue:extent forKey:kCIInputExtentKey];
+	  image = MRC_AUTORELEASE ([[CIImage alloc]
+				     initWithBitmapImageRep:bitmap]);
+	}
+      else
+	image = [CIImage imageWithCGImage:((__bridge CGImageRef)
+					   contentLayer.contents)];
+      [filter setValue:[image imageByApplyingTransform:atfm]
+		forKey:@"inputBacksideImage"];
+    }
+}
+
+/* Delegate Methods  */
+
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1060
+- (id <CAAction>)actionForLayer:(CALayer *)layer forKey:(NSString *)event
+{
+  id action = nil;
+
+  if ([event isEqualToString:@"bounds"]
+      || [event isEqualToString:@"opacity"]
+      || [event isEqualToString:@"position"])
+    {
+      CABasicAnimation *animation =
+	[CA_BASIC_ANIMATION animationWithKeyPath:event];
+
+      [animation setValue:[layer superlayer] forKey:@"layerToBeRemoved"];
+      animation.delegate = self;
+      action = animation;
+    }
+
+  return action;
+}
+
+- (void)animationDidStop:(CAAnimation *)anim finished:(BOOL)flag
+{
+  CALayer *layer = [anim valueForKey:@"layerToBeRemoved"];
+
+  [CA_TRANSACTION setValue:((id) kCFBooleanTrue)
+		    forKey:kCATransactionDisableActions];
+  [layer removeFromSuperlayer];
+}
+#endif
+
+@end
+
+void
+mac_start_animation (frame_or_window, properties)
+     Lisp_Object frame_or_window, properties;
+{
+  struct frame *f;
+  EmacsFrameController *frameController;
+  CGRect rect;
+  CIFilter *transitionFilter;
+  CALayer *layer, *contentLayer;
+  Lisp_Object direction, duration;
+  CGFloat h_ratio, v_ratio;
+  enum {
+    ANIM_TYPE_NONE,
+    ANIM_TYPE_MOVE_OUT,
+    ANIM_TYPE_MOVE_IN,
+    ANIM_TYPE_FADE_OUT,
+    ANIM_TYPE_FADE_IN,
+    ANIM_TYPE_TRANSITION_FILTER
+  } anim_type;
+
+  if (FRAMEP (frame_or_window))
+    {
+      f = XFRAME (frame_or_window);
+      rect = mac_rect_make (f, 0, 0,
+			    FRAME_PIXEL_WIDTH (f), FRAME_PIXEL_HEIGHT (f));
+    }
+  else
+    {
+      struct window *w = XWINDOW (frame_or_window);
+
+      f = XFRAME (WINDOW_FRAME (w));
+      rect = mac_rect_make (f, WINDOW_TO_FRAME_PIXEL_X (w, 0),
+			    WINDOW_TO_FRAME_PIXEL_Y (w, 0),
+			    WINDOW_TOTAL_WIDTH (w),
+			    WINDOW_TOTAL_HEIGHT (w));
+    }
+  frameController = FRAME_CONTROLLER (f);
+
+  transitionFilter =
+    [frameController transitionFilterFromProperties:properties];
+  if (transitionFilter)
+    anim_type = ANIM_TYPE_TRANSITION_FILTER;
+  else
+    {
+      Lisp_Object type;
+
+      direction = Fplist_get (properties, QCdirection);
+
+      type = Fplist_get (properties, QCtype);
+      if (EQ (type, Qnone))
+	anim_type = ANIM_TYPE_NONE;
+      else if (EQ (type, Qfade_in))
+	anim_type = ANIM_TYPE_FADE_IN;
+      else if (EQ (type, Qmove_in))
+	anim_type = ANIM_TYPE_MOVE_IN;
+      else if (EQ (direction, Qleft) || EQ (direction, Qright)
+	       || EQ (direction, Qdown) || EQ (direction, Qup))
+	anim_type = ANIM_TYPE_MOVE_OUT;
+      else
+	anim_type = ANIM_TYPE_FADE_OUT;
+    }
+
+  layer = [frameController layerForRect:(NSRectFromCGRect (rect))];
+  contentLayer = [[layer sublayers] objectAtIndex:0];
+
+  if (anim_type == ANIM_TYPE_FADE_IN)
+    contentLayer.opacity = 0;
+  else if (anim_type == ANIM_TYPE_MOVE_OUT
+	   || anim_type == ANIM_TYPE_MOVE_IN)
+    {
+      h_ratio = v_ratio = 0;
+      if (EQ (direction, Qleft))
+	h_ratio = -1;
+      else if (EQ (direction, Qright))
+	h_ratio = 1;
+      else if (EQ (direction, Qdown))
+	v_ratio = -1;
+      else if (EQ (direction, Qup))
+	v_ratio = 1;
+
+      if (anim_type == ANIM_TYPE_MOVE_IN)
+	{
+	  CGPoint position = contentLayer.position;
+
+	  position.x -= CGRectGetWidth (layer.bounds) * h_ratio;
+	  position.y -= CGRectGetHeight (layer.bounds) * v_ratio;
+	  contentLayer.position = position;
+	}
+    }
+
+  if (anim_type == ANIM_TYPE_MOVE_OUT || anim_type == ANIM_TYPE_MOVE_IN)
+    contentLayer.shadowOpacity = 1;
+
+  [frameController addLayer:layer];
+
+  duration = Fplist_get (properties, QCduration);
+  if (NUMBERP (duration))
+    [CA_TRANSACTION setValue:[NSNumber numberWithDouble:(XFLOATINT (duration))]
+		      forKey:kCATransactionAnimationDuration];
+
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+  [CATransaction setCompletionBlock:^{
+      [CATransaction setDisableActions:YES];
+      [layer removeFromSuperlayer];
+    }];
+#else
+  contentLayer.delegate = frameController;
+#endif
+  switch (anim_type)
+    {
+    case ANIM_TYPE_NONE:
+      {
+	CGRect bounds = contentLayer.bounds;
+
+	/* Dummy change of property that does not affect the
+	   appearance.  */
+	bounds.origin.x += 1;
+	contentLayer.bounds = bounds;
+      }
+      break;
+
+    case ANIM_TYPE_FADE_OUT:
+      contentLayer.opacity = 0;
+      break;
+
+    case ANIM_TYPE_FADE_IN:
+      contentLayer.opacity = 1;
+      break;
+
+    case ANIM_TYPE_MOVE_OUT:
+    case ANIM_TYPE_MOVE_IN:
+      {
+	CGPoint position = contentLayer.position;
+
+	position.x += CGRectGetWidth (layer.bounds) * h_ratio;
+	position.y += CGRectGetHeight (layer.bounds) * v_ratio;
+	contentLayer.position = position;
+      }
+      break;
+
+    case ANIM_TYPE_TRANSITION_FILTER:
+      {
+	CATransition *transition = [[CA_TRANSITION alloc] init];
+	NSMutableDictionary *actions;
+	CALayer *newContentLayer;
+
+	[frameController adjustTransitionFilter:transitionFilter
+				       forLayer:layer];
+	transition.filter = transitionFilter;
+
+	actions = [NSMutableDictionary
+		    dictionaryWithDictionary:[layer actions]];
+	[actions setObject:transition forKey:@"sublayers"];
+	MRC_RELEASE (transition);
+	layer.actions = actions;
+
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1060
+	[transition setValue:layer forKey:@"layerToBeRemoved"];
+	transition.delegate = frameController;
+#endif
+
+	newContentLayer = [CA_LAYER layer];
+	newContentLayer.frame = contentLayer.frame;
+	newContentLayer.opacity = 0;
+	[layer replaceSublayer:contentLayer with:newContentLayer];
+      }
+      break;
+
+    default:
+      abort ();
+    }
+}
+
+#endif
 
 
 /***********************************************************************
@@ -11744,59 +12343,181 @@ mac_font_shape_1 (font, string, glyph_layouts, glyph_len, screen_font_p)
 	  used--;
     }
 
-  if (used <= glyph_len)
+  if (0 < used && used <= glyph_len)
     {
-      NSUInteger glyphIndex = 0;
-      NSRange compRange = NSMakeRange (0, 0);
-      CGFloat totalAdvance = 0;
+      NSUInteger glyphIndex, prevGlyphIndex;
+      unsigned char bidiLevel;
+      NSUInteger *permutation;
+      NSRange compRange, range;
+      CGFloat totalAdvance;
 
+      glyphIndex = 0;
       while ([layoutManager notShownAttributeForGlyphAtIndex:glyphIndex])
 	glyphIndex++;
 
-      for (i = 0; i < used; i++)
-	{
-	  struct mac_glyph_layout *gl = glyph_layouts + i;
-	  NSUInteger characterIndex;
-	  NSPoint location;
-	  NSRect *glyphRects;
-	  NSUInteger nrects;
-	  CGFloat maxX;
+      /* For now we assume the direction is not changed within the
+	 string.  */
+      [layoutManager getGlyphsInRange:(NSMakeRange (glyphIndex, 1))
+			       glyphs:NULL characterIndexes:NULL
+		    glyphInscriptions:NULL elasticBits:NULL
+			   bidiLevels:&bidiLevel];
+      if (bidiLevel & 1)
+	permutation = xmalloc (sizeof (NSUInteger) * used);
+      else
+	permutation = NULL;
 
-	  characterIndex = [layoutManager
-			     characterIndexForGlyphAtIndex:glyphIndex];
+#define RIGHT_TO_LEFT_P permutation
+
+      /* Fill the `comp_range' member of struct mac_glyph_layout, and
+	 setup a permutation for right-to-left text.  */
+      compRange = NSMakeRange (0, 0);
+      for (range = NSMakeRange (0, 0); NSMaxRange (range) < used;
+	   range.length++)
+	{
+	  struct mac_glyph_layout *gl = glyph_layouts + NSMaxRange (range);
+	  NSUInteger characterIndex =
+	    [layoutManager characterIndexForGlyphAtIndex:glyphIndex];
+
+	  gl->string_index = characterIndex;
+
 	  if (characterIndex >= NSMaxRange (compRange))
 	    {
 	      compRange.location = NSMaxRange (compRange);
-	      compRange.length =
-		(NSMaxRange
-		 ([string
-		    rangeOfComposedCharacterSequenceAtIndex:characterIndex])
-		 - compRange.location);
+	      do
+		{
+		  NSRange characterRange =
+		    [string
+		      rangeOfComposedCharacterSequenceAtIndex:characterIndex];
+
+		  compRange.length =
+		    NSMaxRange (characterRange) - compRange.location;
+		  [layoutManager glyphRangeForCharacterRange:compRange
+					actualCharacterRange:&characterRange];
+		  characterIndex = NSMaxRange (characterRange) - 1;
+		}
+	      while (characterIndex >= NSMaxRange (compRange));
+
+	      if (RIGHT_TO_LEFT_P)
+		for (i = 0; i < range.length; i++)
+		  permutation[range.location + i] = NSMaxRange (range) - i - 1;
+
+	      range = NSMakeRange (NSMaxRange (range), 0);
 	    }
 
 	  gl->comp_range.location = compRange.location;
 	  gl->comp_range.length = compRange.length;
+
+	  while (++glyphIndex < numberOfGlyphs)
+	    if (![layoutManager notShownAttributeForGlyphAtIndex:glyphIndex])
+	      break;
+	}
+      if (RIGHT_TO_LEFT_P)
+	for (i = 0; i < range.length; i++)
+	  permutation[range.location + i] = NSMaxRange (range) - i - 1;
+
+      /* Then fill the remaining members.  */
+      glyphIndex = prevGlyphIndex = 0;
+      while ([layoutManager notShownAttributeForGlyphAtIndex:glyphIndex])
+	glyphIndex++;
+
+      if (!RIGHT_TO_LEFT_P)
+	totalAdvance = 0;
+      else
+	{
+	  NSUInteger nrects;
+	  NSRect *glyphRects =
+	    [layoutManager
+	      rectArrayForGlyphRange:(NSMakeRange (0, numberOfGlyphs))
+	      withinSelectedGlyphRange:(NSMakeRange (NSNotFound, 0))
+		     inTextContainer:textContainer rectCount:&nrects];
+
+	  totalAdvance = NSMaxX (glyphRects[0]);
+	}
+
+      for (i = 0; i < used; i++)
+	{
+	  struct mac_glyph_layout *gl;
+	  NSPoint location;
+	  NSUInteger nextGlyphIndex;
+	  NSRange glyphRange;
+	  NSRect *glyphRects;
+	  NSUInteger nrects;
+
+	  if (!RIGHT_TO_LEFT_P)
+	    gl = glyph_layouts + i;
+	  else
+	    {
+	      NSUInteger dest = permutation[i];
+
+	      gl = glyph_layouts + dest;
+	      if (i < dest)
+		{
+		  CFIndex tmp = gl->string_index;
+
+		  gl->string_index = glyph_layouts[i].string_index;
+		  glyph_layouts[i].string_index = tmp;
+		}
+	    }
 	  gl->glyph_id = [layoutManager glyphAtIndex:glyphIndex];
-	  gl->string_index = characterIndex;
 
 	  location = [layoutManager locationForGlyphAtIndex:glyphIndex];
-	  gl->advance_delta = location.x - totalAdvance;
 	  gl->baseline_delta = spaceLocation.y - location.y;
 
-	  while (glyphIndex + 1 < numberOfGlyphs
-		 && [layoutManager
-		      notShownAttributeForGlyphAtIndex:(glyphIndex + 1)])
-	    glyphIndex++;
-	  glyphRects = [layoutManager
-			 rectArrayForGlyphRange:(NSMakeRange (glyphIndex, 1))
-			 withinSelectedGlyphRange:(NSMakeRange (NSNotFound, 0))
-			 inTextContainer:textContainer rectCount:&nrects];
-	  maxX = max (NSMaxX (glyphRects[0]), totalAdvance);
-	  gl->advance = maxX - totalAdvance;
-	  totalAdvance = maxX;
+	  for (nextGlyphIndex = glyphIndex + 1; nextGlyphIndex < numberOfGlyphs;
+	       nextGlyphIndex++)
+	    if (![layoutManager
+		   notShownAttributeForGlyphAtIndex:nextGlyphIndex])
+	      break;
 
-	  glyphIndex++;
+	  if (!RIGHT_TO_LEFT_P)
+	    {
+	      CGFloat maxX;
+
+	      if (prevGlyphIndex == 0)
+		glyphRange = NSMakeRange (0, nextGlyphIndex);
+	      else
+		glyphRange = NSMakeRange (glyphIndex,
+					  nextGlyphIndex - glyphIndex);
+	      glyphRects =
+		[layoutManager
+		  rectArrayForGlyphRange:glyphRange
+		  withinSelectedGlyphRange:(NSMakeRange (NSNotFound, 0))
+			 inTextContainer:textContainer rectCount:&nrects];
+	      maxX = max (NSMaxX (glyphRects[0]), totalAdvance);
+	      gl->advance_delta = location.x - totalAdvance;
+	      gl->advance = maxX - totalAdvance;
+	      totalAdvance = maxX;
+	    }
+	  else
+	    {
+	      CGFloat minX;
+
+	      if (nextGlyphIndex == numberOfGlyphs)
+		glyphRange = NSMakeRange (prevGlyphIndex,
+					  numberOfGlyphs - prevGlyphIndex);
+	      else
+		glyphRange = NSMakeRange (prevGlyphIndex,
+					  glyphIndex + 1 - prevGlyphIndex);
+	      glyphRects =
+		[layoutManager
+		  rectArrayForGlyphRange:glyphRange
+		  withinSelectedGlyphRange:(NSMakeRange (NSNotFound, 0))
+			 inTextContainer:textContainer rectCount:&nrects];
+	      minX = min (NSMinX (glyphRects[0]), totalAdvance);
+	      gl->advance = totalAdvance - minX;
+	      totalAdvance = minX;
+	      gl->advance_delta = location.x - totalAdvance;
+	    }
+
+	  prevGlyphIndex = glyphIndex + 1;
+	  glyphIndex = nextGlyphIndex;
 	}
+
+      if (RIGHT_TO_LEFT_P)
+	xfree (permutation);
+
+#undef RIGHT_TO_LEFT_P
+
       result = used;
     }
   MRC_RELEASE (textStorage);

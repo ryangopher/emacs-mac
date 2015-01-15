@@ -94,9 +94,9 @@ which means to start Emacs with minimum customizations.
 the @samp{fullscreen} frame parameter have different meanings: the
 former means a new system-wide full screen mode with a dedicated
 desktop (or Space), while the latter means making the frame fullscreen
-in a desktop (or Space) shared with the other applications.  As a
-result, @samp{-fs} or @samp{--fullscreen} command line option means
-the former on Mac OS X 10.7.
+in a desktop (or Space) shared with the other applications.  Because
+the command line option @samp{-fs} or @samp{--fullscreen} corresponds
+to @samp{fullboth}, it means the latter on all versions of Mac OS X.
 
 @cindex Preferences (Mac port)
   Although the Mac port does not support X resources (@pxref{X
@@ -361,3 +361,7 @@ function @code{mac-convert-property-list} converts a Core Foundation
 property list, which is typically used in a @samp{.plist} file,
 between several formats (@acronym{XML}, binary, or Lisp
 representation).
+
+@findex mac-start-animation
+  The function @code{mac-start-animation} starts animation effect
+using Core Animation on Mac OS X 10.5 and later.

@@ -200,6 +200,8 @@ Leaving \"Default\" unchecked is equivalent with specifying a default of
 	     (suggest-key-bindings keyboard (choice (const :tag "off" nil)
 						    (integer :tag "time" 2)
 						    (other :tag "on")))
+	     ;; mac.c
+	     (mac-system-move-file-to-trash-use-finder mac boolean "23.4")
 	     ;; macselect.c
 	     (mac-dnd-known-types mac (repeat string) "22.1")
 	     ;; macterm.c

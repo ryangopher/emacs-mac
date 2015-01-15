@@ -206,9 +206,7 @@ along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.  */
 
 /* Whether to use the Quartz Core framework.  */
 #ifndef USE_MAC_QUARTZ_CORE
-#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1060
-/* The above condition excludes PPC so we don't have to worry about
-   Mac OS X 10.2 that doesn't have Quartz Core.  */
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050 && MAC_OS_X_VERSION_MIN_REQUIRED > 1020
 #define USE_MAC_QUARTZ_CORE 1
 #endif
 #endif
@@ -222,13 +220,6 @@ along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.  */
 #define LIBS_GUI -framework Cocoa
 
 #define LIBS_MACGUI -framework Carbon LIBS_IMAGE LIBS_QUARTZ_CORE LIBS_GUI
-
-/* Reroute calls to SELECT to the version defined in mac.c to fix the
-   problem of Emacs requiring an extra return to be typed to start
-   working when started from the command line.  */
-#if defined (emacs) || defined (temacs)
-#define select sys_select
-#endif
 
 #else  /* !HAVE_MACGUI */
 #define LIBS_MACGUI

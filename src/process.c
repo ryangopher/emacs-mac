@@ -4632,7 +4632,14 @@ select_wrapper (n, rfd, wfd, xfd, tmo)
   SELECT_TYPE *rfd, *wfd, *xfd;
   EMACS_TIME *tmo;
 {
+#ifdef HAVE_MACGUI
+  extern int sys_select P_ ((int, SELECT_TYPE *, SELECT_TYPE *, SELECT_TYPE *,
+			     EMACS_TIME *));
+
+  return sys_select (n, rfd, wfd, xfd, tmo);
+#else
   return select (n, rfd, wfd, xfd, tmo);
+#endif
 }
 #define select select_wrapper
 #endif

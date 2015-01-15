@@ -564,7 +564,7 @@ extern Lisp_Object make_number P_ ((EMACS_INT));
 
 #define XVECTOR_SIZE(a) (XVECTOR (a)->header.size + 0)
 #define XVECTORLIKE_HEADER_SIZE(a) \
-  (((struct vectorlike_header *) XPNTR (a))->size + 0)
+  (((struct vectorlike_header *) XUNTAG (a, Lisp_Vectorlike))->size + 0)
 
 /* Misc types.  */
 
@@ -1619,7 +1619,7 @@ typedef struct {
    code is CODE.  */
 #define TYPED_PSEUDOVECTORP(x, t, code)				\
   (VECTORLIKEP (x)						\
-   && (((((struct t *) XPNTR (x))->size				\
+   && (((((struct t *) XUNTAG (x, Lisp_Vectorlike))->size	\
 	 & (PSEUDOVECTOR_FLAG | (code))))			\
        == (PSEUDOVECTOR_FLAG | (code))))
 

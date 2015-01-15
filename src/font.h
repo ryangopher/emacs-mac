@@ -832,6 +832,7 @@ extern struct font_driver w32font_driver;
 extern struct font_driver uniscribe_font_driver;
 #endif	/* WINDOWSNT */
 #ifdef HAVE_MACGUI
+extern void mac_register_font_driver P_ ((struct frame *));
 extern struct font_driver macfont_driver;
 #endif	/* HAVE_MACGUI */
 #ifdef HAVE_NS

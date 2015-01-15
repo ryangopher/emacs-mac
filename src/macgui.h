@@ -29,7 +29,6 @@ typedef Lisp_Object XrmDatabase;
 
 typedef unsigned long Time;
 
-#ifdef HAVE_MACGUI
 #undef Z
 #if ! HAVE_MKTIME || BROKEN_MKTIME
 #undef mktime
@@ -43,7 +42,12 @@ typedef unsigned long Time;
 #undef max
 #undef min
 #undef init_process
+#define __ASSERT_MACROS_DEFINE_VERSIONS_WITHOUT_UNDERSCORES 0
 #include <Carbon/Carbon.h>
+#ifdef check /* __ASSERT_MACROS_DEFINE_VERSIONS_WITHOUT_UNDERSCORES is
+		not in effect.  */
+#undef check
+#endif
 #if ! HAVE_MKTIME || BROKEN_MKTIME
 #undef mktime
 #define mktime emacs_mktime
@@ -63,14 +67,6 @@ typedef unsigned long Time;
 #undef INFINITY
 #undef Z
 #define Z (current_buffer->text->z)
-#else /* not HAVE_MACGUI */
-#include <Quickdraw.h>		/* for WindowRef */
-#include <QDOffscreen.h>	/* for GWorldPtr */
-#include <Appearance.h>		/* for ThemeCursor */
-#include <Windows.h>
-#include <Controls.h>
-#include <Gestalt.h>
-#endif /* not HAVE_MACGUI */
 
 #ifndef CGFLOAT_DEFINED
 typedef float CGFloat;
@@ -96,6 +92,7 @@ extern OSStatus mac_move_frame_window_structure P_ ((struct frame *,
 extern void mac_move_frame_window P_ ((struct frame *, short, short, Boolean));
 extern void mac_size_frame_window P_ ((struct frame *, short, short, Boolean));
 extern OSStatus mac_set_frame_window_alpha P_ ((struct frame *, CGFloat));
+extern OSStatus mac_get_frame_window_alpha P_ ((struct frame *, CGFloat *));
 extern void mac_get_global_mouse P_ ((Point *));
 extern Boolean mac_is_frame_window_toolbar_visible P_ ((struct frame *));
 extern CGRect mac_rect_make P_ ((struct frame *, CGFloat, CGFloat,

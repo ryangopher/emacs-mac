@@ -445,7 +445,7 @@
 
 (defgroup mac nil
   "Mac specific features."
-  :link '(custom-manual "(emacs)Mac OS")
+  :link '(custom-manual "(emacs)Mac Port")
   :group 'environment
   :version "22.1"
   :prefix "mac-")

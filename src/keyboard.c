@@ -6226,6 +6226,21 @@ make_lispy_event (event)
 	    || !NILP (event->arg)
 #endif
 	    )
+#ifdef HAVE_MACGUI
+	  {
+	    extern int mac_ignore_momentum_wheel_events;
+
+	    if (mac_ignore_momentum_wheel_events)
+	      {
+		Lisp_Object phases =
+		  CAR_SAFE (CDR_SAFE (CDR_SAFE (CDR_SAFE (event->arg))));
+		Lisp_Object momentum_phase = CAR_SAFE (CDR_SAFE (phases));
+
+		if (!NILP (momentum_phase)
+		    && !EQ (momentum_phase, make_number (0)))
+		  return Qnil;
+	      }
+#endif
 	  return Fcons (head,
 			Fcons (position,
 			       Fcons (make_number (double_click_count),
@@ -6233,6 +6248,9 @@ make_lispy_event (event)
 				      !NILP (event->arg) ? Fcons (event->arg, Qnil) :
 #endif
 				      Qnil)));
+#ifdef HAVE_MACGUI
+          }
+#endif
 	else
 	  return Fcons (head,
 			Fcons (position,

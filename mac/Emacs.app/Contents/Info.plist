@@ -71,6 +71,8 @@ along with GNU Emacs Mac port.  If not, see <http://www.gnu.org/licenses/>.
 	</array>
 	<key>NSAppleScriptEnabled</key>
 	<string>YES</string>
+	<key>NSPrincipalClass</key>
+	<string>EmacsApplication</string>
   	<key>NSServices</key>
 	<array>
 		<dict>

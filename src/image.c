@@ -2806,9 +2806,13 @@ image_load_image_io (f, img, type)
 
 	  dict = CFDictionaryGetValue (props, kCGImagePropertyGIFDictionary);
 	  if (dict
-	      && CFDictionaryGetValueIfPresent (dict,
-						kCGImagePropertyGIFDelayTime,
-						(const void **) &number))
+	      /* Use the unclamped delay time if available.  */
+	      && (CFDictionaryGetValueIfPresent (dict,
+						 CFSTR ("UnclampedDelayTime"),
+						 (const void **) &number)
+		  || CFDictionaryGetValueIfPresent (dict,
+						    kCGImagePropertyGIFDelayTime,
+						    (const void **) &number)))
 	    CFNumberGetValue (number, kCFNumberDoubleType, &delay_time);
 	}
       CFRelease (src_props);

@@ -28,7 +28,6 @@ along with GNU Emacs Mac port.  If not, see <http://www.gnu.org/licenses/>.  */
 
 #include "lisp.h"
 #include "process.h"
-#undef select
 #include "systime.h"
 #include "sysselect.h"
 #include "blockinput.h"
@@ -63,6 +62,9 @@ static EMACS_INT mac_system_script_code;
 
 /* The system locale identifier string.  */
 static Lisp_Object Vmac_system_locale;
+
+/* Non-zero means that `system-move-file-to-trash' uses the Finder.  */
+static int mac_system_move_file_to_trash_use_finder;
 
 /* An instance of the AppleScript component.  */
 static ComponentInstance as_scripting_component;
@@ -2028,8 +2030,8 @@ xrm_get_resource (database, name, class)
   nn = strlen (name);
   nc = strlen (class);
   key = make_uninit_string (nn + nc + 1);
-  strcpy (SDATA (key), name);
-  strncpy (SDATA (key) + nn + 1, class, nc);
+  memcpy (SDATA (key), name, nn + 1);
+  memcpy (SDATA (key) + nn + 1, class, nc);
 
   query_cache = Fgethash (HASHKEY_QUERY_CACHE, database, Qnil);
   if (NILP (query_cache))
@@ -2111,7 +2113,6 @@ xrm_get_preference_database (application)
   CFMutableSetRef key_set = NULL;
   CFArrayRef key_array;
   CFIndex index, count;
-  char *res_name;
   XrmDatabase database;
   Lisp_Object quarks = Qnil, value = Qnil;
   CFPropertyListRef plist;
@@ -2160,7 +2161,8 @@ xrm_get_preference_database (application)
   CFSetGetValues (key_set, (const void **)keys);
   for (index = 0; index < count; index++)
     {
-      res_name = SDATA (cfstring_to_lisp_nodecode (keys[index]));
+      const char *res_name = SDATA (cfstring_to_lisp_nodecode (keys[index]));
+
       quarks = parse_resource_name (&res_name);
       if (!(NILP (quarks) || *res_name))
 	{
@@ -2552,9 +2554,11 @@ DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
     {
       BLOCK_INPUT;
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
+      if (!mac_system_move_file_to_trash_use_finder
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 1050 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020
-      if (FSMoveObjectToTrashSync != NULL)
+	  && FSMoveObjectToTrashSync != NULL
 #endif
+	  )
 	{
 	  /* FSPathMoveObjectToTrashSync tries to delete the
 	     destination of the specified symbolic link.  So we use
@@ -2563,14 +2567,11 @@ DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
 	  err = FSMoveObjectToTrashSync (&fref, NULL,
 					 kFSFileOperationDefaultOptions);
 	}
-#if MAC_OS_X_VERSION_MIN_REQUIRED < 1050 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020
-      else				/* FSMoveObjectToTrashSync == NULL */
+      else
 #endif
-#endif
-#if MAC_OS_X_VERSION_MAX_ALLOWED < 1050 || (MAC_OS_X_VERSION_MIN_REQUIRED < 1050 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020)
 	{
 	  const OSType finderSignature = 'MACS';
-	  UInt32 response;
+	  SInt32 response;
 	  AEDesc desc;
 	  AppleEvent event, reply;
 
@@ -2640,7 +2641,6 @@ DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
 	      AEDisposeDesc (&reply);
 	    }
 	}
-#endif
       UNBLOCK_INPUT;
     }
 
@@ -4066,6 +4066,15 @@ syms_of_mac ()
 This is not a POSIX locale ID, but an ICU locale ID.  So encoding
 information is not included.  */);
   Vmac_system_locale = mac_get_system_locale ();
+
+  DEFVAR_BOOL ("mac-system-move-file-to-trash-use-finder",
+	       &mac_system_move_file_to_trash_use_finder,
+     doc: /* *Non-nil means that `system-move-file-to-trash' uses the Finder.
+Setting this variable non-nil enables us to use the `Put Back' context
+menu for trashed items, but it also affects the `Edit' - `Undo' menu
+in the Finder.  On Mac OS X 10.4 and earlier, this variable has no
+effect and trashing is always done via the Finder.  */);
+  mac_system_move_file_to_trash_use_finder = 0;
 }
 
 /* arch-tag: 29d30c1f-0c6b-4f88-8a6d-0558d7f9dbff

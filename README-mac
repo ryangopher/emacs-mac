@@ -151,7 +151,8 @@ the following Mac-specific ones:
     QuickCursor 2.0, you need to kill the buffer after saving it in
     order to reflect the changes to the original text area.)
   * "Click in the scroll bar to: Jump to the spot that's clicked"
-    setting in the System Preferences is supported.
+    setting in the System Preferences is supported.  Pressing the
+    option key while clicking toggles this behavior temporarily.
   * Change of text smoothing threshold setting in the Appearance pane
     of the System Preferences is reflected immediately.
   * Several keyboard shortcuts (notably those for Keyboard Navigation)
@@ -174,7 +175,16 @@ the following Mac-specific ones:
   * New function `mac-file-alias-p', which is parallel to
     `file-symlink-p'.
   * Experimental support for accessibility with respect to the custom
-    view for Emacs frames.  Still there are several glitches.
+    view for Emacs frames.  It is required to support "Text to Speech"
+    on Mac OS X 10.7.  Still there are several glitches.
+  * Can display color bitmap fonts such as Apple Color Emoji, if
+    compiled and executed on Mac OS X 10.7.
+  * New function `mac-start-animation', which provides animation
+    effects on Mac OS 10.5 and later via Core Animation.  You can see
+    the default animations with buffer switching by horizontal
+    swiping/flicking, exiting from the splash screen by typing "q",
+    and the "About Emacs" and "Preferences..." menu items in the
+    application menu (labeled "Emacs") in the menu bar.
 
 As Quickdraw-style font rendering is considered obsolete as of Mac OS
 X 10.5, the variable `mac-allow-anti-aliasing', which was supported in

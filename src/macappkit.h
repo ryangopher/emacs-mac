@@ -22,6 +22,9 @@ along with GNU Emacs Mac port.  If not, see <http://www.gnu.org/licenses/>.  */
 #if USE_MAC_IMAGE_IO
 #import <WebKit/WebKit.h>
 #endif
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
+#import <QuartzCore/QuartzCore.h>
+#endif
 #define Z (current_buffer->text->z)
 
 #ifndef NSAppKitVersionNumber10_2
@@ -165,6 +168,10 @@ typedef unsigned int NSUInteger;
      applicationWillFinishLaunching: or not.  */
   BOOL serviceProviderRegistered;
 
+  /* Whether the application should update its presentation options
+     when it becomes active next time.  */
+  BOOL needsUpdatePresentationOptionsOnBecomingActive;
+
   /* Whether conflicting Cocoa's text system key bindings (e.g., C-q)
      are disabled or not.  */
   BOOL conflictingKeyBindingsDisabled;
@@ -280,6 +287,11 @@ typedef unsigned int NSUInteger;
   /* The last window frame before maximize/fullscreen.  The position
      is relative to the top left corner of the screen.  */
   NSRect savedFrame;
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
+  /* The view hosting Core Animation layers in the overlay window.  */
+  NSView *layerHostingView;
+#endif
 
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1060
   /* Window manager state after the full screen transition.  */
@@ -607,6 +619,16 @@ typedef unsigned int NSUInteger;
 - (void)postAccessibilityNotificationsToEmacsView;
 @end
 
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
+@interface EmacsFrameController (Animation)
+- (void)setupLayerHostingView;
+- (CALayer *)layerForRect:(NSRect)rect;
+- (void)addLayer:(CALayer *)layer;
+- (CIFilter *)transitionFilterFromProperties:(Lisp_Object)properties;
+- (void)adjustTransitionFilter:(CIFilter *)filter forLayer:(CALayer *)layer;
+@end
+#endif
+
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 1050
 
 /* Class for locale objects used in kCTFontLanguagesAttribute
@@ -674,6 +696,12 @@ typedef unsigned int NSUInteger;
 #if MAC_OS_X_VERSION_MAX_ALLOWED < 1050
 @interface NSNumber (AvailableOn1050AndLater)
 + (NSNumber *)numberWithInteger:(NSInteger)value;
+@end
+#endif
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED < 1060
+@interface NSImage (AvailableOn1060AndLater)
+- (id)initWithCGImage:(CGImageRef)cgImage size:(NSSize)size;
 @end
 #endif
 
@@ -769,6 +797,7 @@ enum {
 - (NSWindowAnimationBehavior)animationBehavior;
 - (void)setAnimationBehavior:(NSWindowAnimationBehavior)newAnimationBehavior;
 - (void)toggleFullScreen:(id)sender;
+- (CGFloat)backingScaleFactor;
 @end
 #endif
 
@@ -844,6 +873,10 @@ typedef NSUInteger NSEventPhase;
 @interface NSAnimationContext (AvailableOn1070AndLater)
 + (void)runAnimationGroup:(void (^)(NSAnimationContext *context))changes
         completionHandler:(void (^)(void))completionHandler;
+@end
+
+@interface CALayer (AvailableOn1070AndLater)
+@property CGFloat contentsScale;
 @end
 #endif
 #endif

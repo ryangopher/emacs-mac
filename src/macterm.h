@@ -599,6 +599,7 @@ extern int x_pixel_width P_ ((struct frame *));
 extern int x_pixel_height P_ ((struct frame *));
 extern int x_char_width P_ ((struct frame *));
 extern int x_char_height P_ ((struct frame *));
+extern int mac_defined_color P_ ((FRAME_PTR, char *, XColor *, int));
 extern void x_sync P_ ((struct frame *));
 extern void x_set_tool_bar_lines P_ ((struct frame *, Lisp_Object, Lisp_Object));
 extern void mac_update_title_bar P_ ((struct frame *, int));
@@ -630,6 +631,7 @@ extern CFPropertyListRef cfproperty_list_create_with_lisp P_ ((Lisp_Object));
 extern Lisp_Object cfproperty_list_to_string P_ ((CFPropertyListRef,
 						  CFPropertyListFormat));
 extern CFPropertyListRef cfproperty_list_create_with_string P_ ((Lisp_Object));
+extern int init_wakeup_fds P_ ((void));
 extern void xrm_merge_string_database P_ ((XrmDatabase, const char *));
 extern Lisp_Object xrm_get_resource P_ ((XrmDatabase, const char *,
 					 const char *));
@@ -713,9 +715,9 @@ extern void mac_release_autorelease_pool P_ ((void *));
 
 extern int mac_tracking_area_works_with_cursor_rects_invalidation_p P_ ((void));
 extern void mac_invalidate_frame_cursor_rects P_ ((struct frame *f));
-
-extern CGContextRef mac_begin_cg_clip P_ ((struct frame *, GC));
-extern void mac_end_cg_clip P_ ((struct frame *));
+#if USE_MAC_IMAGE_IO
+extern int mac_webkit_supports_svg_p P_ ((void));
+#endif
 
 #define CG_SET_FILL_COLOR(context, color)				\
   CGContextSetRGBFillColor (context,					\
@@ -777,6 +779,10 @@ extern void mac_end_cg_clip P_ ((struct frame *));
 extern void macfont_update_antialias_threshold P_ ((void));
 extern void *macfont_get_nsctfont P_ ((struct font *));
 extern Lisp_Object macfont_nsctfont_to_spec P_ ((void *));
+
+/* Defined in xdisp.c */
+extern struct glyph *x_y_to_hpos_vpos P_ ((struct window *, int, int,
+					   int *, int *, int *, int *, int *));
 
 /* arch-tag: 6b4ca125-5bef-476d-8ee8-31ed808b7e79
    (do not change this comment) */

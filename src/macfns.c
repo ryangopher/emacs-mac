@@ -2760,7 +2760,7 @@ If omitted or nil, that stands for the selected frame's display.  */)
      (terminal)
      Lisp_Object terminal;
 {
-  UInt32 response, major, minor, bugfix;
+  SInt32 response, major, minor, bugfix;
   OSErr err;
 
   BLOCK_INPUT;
@@ -3602,6 +3602,9 @@ compute_tip_xy (f, parms, dx, dy, width, height, root_x, root_y)
      int *root_x, *root_y;
 {
   Lisp_Object left, top;
+  CGRect bounds =
+    CGRectMake (0, 0, x_display_pixel_width (FRAME_MAC_DISPLAY_INFO (f)),
+		x_display_pixel_height (FRAME_MAC_DISPLAY_INFO (f)));
 
   /* User-specified position?  */
   left = Fcdr (Fassq (Qleft, parms));
@@ -3612,43 +3615,63 @@ compute_tip_xy (f, parms, dx, dy, width, height, root_x, root_y)
   if (!INTEGERP (left) || !INTEGERP (top))
     {
       Point mouse_pos;
+      CGPoint point;
+      CGError err;
+      uint32_t count;
 
       BLOCK_INPUT;
       mac_get_global_mouse (&mouse_pos);
       *root_x = mouse_pos.h;
       *root_y = mouse_pos.v;
+      point.x = mouse_pos.h;
+      point.y = mouse_pos.v;
+      err = CGGetDisplaysWithPoint (point, 0, NULL, &count);
+      if (err == kCGErrorSuccess)
+	{
+	  CGDirectDisplayID *displays =
+	    alloca (sizeof (CGDirectDisplayID) * count);
+
+	  err = CGGetDisplaysWithPoint (point, count, displays, &count);
+	  if (err == kCGErrorSuccess && count > 0)
+	    {
+	      uint32_t i;
+
+	      bounds = CGDisplayBounds (displays[0]);
+	      for (i = 1; i < count; i++)
+		bounds = CGRectIntersection (bounds,
+					     CGDisplayBounds (displays[i]));
+	    }
+	}
       UNBLOCK_INPUT;
     }
 
   if (INTEGERP (top))
     *root_y = XINT (top);
-  else if (*root_y + XINT (dy) <= 0)
-    *root_y = 0; /* Can happen for negative dy */
-  else if (*root_y + XINT (dy) + height
-	   <= x_display_pixel_height (FRAME_MAC_DISPLAY_INFO (f)))
+  else if (*root_y + XINT (dy) <= CGRectGetMinY (bounds))
+    *root_y = CGRectGetMinY (bounds); /* Can happen for negative dy */
+  else if (*root_y + XINT (dy) + height <= CGRectGetMaxY (bounds))
     /* It fits below the pointer */
     *root_y += XINT (dy);
-  else if (height + XINT (dy) <= *root_y)
+  else if (CGRectGetMinY (bounds) + height + XINT (dy) <= *root_y)
     /* It fits above the pointer.  */
     *root_y -= height + XINT (dy);
   else
     /* Put it on the top.  */
-    *root_y = 0;
+    *root_y = CGRectGetMinY (bounds);
 
   if (INTEGERP (left))
     *root_x = XINT (left);
-  else if (*root_x + XINT (dx) <= 0)
-    *root_x = 0; /* Can happen for negative dx */
-  else if (*root_x + XINT (dx) + width
-	   <= x_display_pixel_width (FRAME_MAC_DISPLAY_INFO (f)))
+  else if (*root_x + XINT (dx) <= CGRectGetMinX (bounds))
+    *root_x = CGRectGetMinX (bounds); /* Can happen for negative dx */
+  else if (*root_x + XINT (dx) + width <= CGRectGetMaxX (bounds))
     /* It fits to the right of the pointer.  */
     *root_x += XINT (dx);
-  else if (width + XINT (dx) <= *root_x)
+  else if (CGRectGetMinX (bounds) + width + XINT (dx) <= *root_x)
     /* It fits to the left of the pointer.  */
     *root_x -= width + XINT (dx);
   else
     /* Put it left-justified on the screen--it ought to fit that way.  */
-    *root_x = 0;
+    *root_x = CGRectGetMinX (bounds);
 }
 
 
@@ -3990,6 +4013,153 @@ This is for internal use only.  Use `mac-font-panel-mode' instead.  */)
 
 
 /***********************************************************************
+			      Animation
+ ***********************************************************************/
+
+Lisp_Object QCdirection, QCduration, Qfade_in, Qmove_in;
+Lisp_Object Qbars_swipe, Qcopy_machine, Qdissolve, Qflash, Qmod;
+Lisp_Object Qpage_curl, Qpage_curl_with_shadow, Qripple, Qswipe;
+
+DEFUN ("mac-start-animation", Fmac_start_animation, Smac_start_animation, 1, MANY, 0,
+       doc: /* Start animation effect for FRAME-OR-WINDOW.
+The current display contents of FRAME-OR-WINDOW (the selected frame if
+nil) is captured and its actual animation effect will begin when the
+event is read from the window system next time.  The animation is
+processed asynchronously, and the drawing is done in a special window
+overlaid on the ordinary one so the contents of the ordinary window
+can be seen through the transparent part of the overlay window.
+
+PROPERTIES is a property list consisting of the followings:
+
+  Name	        Value           Meaning
+  -------------------------------------------------------------------
+  :type         symbol (`fade-out', 'fade-in', `move-out', `move-in',
+                        `none', or transition filters listed below)
+                                animation type
+  :duration     number          animation duration in seconds
+  :direction    symbol (`left', `right', `up', or `down')
+                                direction for move-out, move-in or
+                                some transition filters
+  (other properties specific to transition filters listed below)
+
+All the properties are optional, and ill-formed ones are silently
+ignored.  If the :type property is unspecified, then the type of the
+animation defaults to move-out if the :direction property is
+properly specified, and fade-out otherwise.
+
+The value for the :type property may be one of the following symbols
+specifying the built-in Core Image transition filters:
+
+`bars-swipe': Pass a bar over the source image.
+  numeric properties:  :angle, :width, :bar-offset
+  symbolic properties: :direction
+
+`copy-machine': Simulate the effect of a copy machine.
+  numeric properties:  :angle, :width, :opacity
+  symbolic properties: :direction
+  other properties:    :color
+
+`dissolve': Use a dissolve.
+
+`flash': Create a flash.
+  numeric properties:  :max-striation-radius, :striation-strength,
+                       :striation-contrast, :input-fade-threshold
+  other properties:    :color
+
+`mod': Reveal the target image through irregularly shaped holes.
+  numeric properties:  :angle, :radius, :compression
+
+`page-curl': Simulate a curling page, revealing the new image as the
+             page curls.
+  numeric properties:  :angle, :radius
+  symbolic properties: :direction
+
+`page-curl-with-shadow': Like `page-curl', but with shadow.  Fall back
+                         on `page-curl' on Mac OS X 10.6 or earlier.
+  numeric properties:  :angle, :radius, :shadow-size, :shadow-amount
+  symbolic properties: :direction
+
+`ripple': Create a circular wave that expands from the center point,
+          revealing the new image in the wake of the wave.
+  numeric properties: :width, :scale
+
+`swipe': Simulate a swiping action.
+  numeric properties:  :angle, :width, :opacity
+  symbolic properties: :direction
+  other properties:    :color
+
+The :direction property for the transition filters is in effect only
+when :angle is unspecified or ill-formed.  The :angle property is
+specified in radians.  The value for the :color property is either a
+string or a list of three numbers, (RED GREEN BLUE), each of which is
+either an integer between 0 and 65535 inclusive (as in the result of
+the function `color-values'), or a floating-point number between 0.0
+and 1.0 inclusive.
+
+These transition filters use the current display contents of
+FRAME-OR-WINDOW as the source image, and the completely transparent
+image as the target, so the result of display changes that follow
+becomes visible gradually through the transparent part.
+
+This function has no effect and returns nil if compiled or run on Mac
+OS X 10.4 or earlier, or when FRAME-OR-WINDOW is of the frame that is
+not completely opaque.
+usage: (mac-start-animation FRAME-OR-WINDOW &rest PROPERTIES) */)
+     (nargs, args)
+     int nargs;
+     register Lisp_Object *args;
+{
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
+  extern void mac_start_animation (Lisp_Object, Lisp_Object);
+  Lisp_Object frame_or_window, properties;
+  CGFloat alpha;
+  int count;
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1050
+  SInt32 response;
+  OSErr err;
+
+  BLOCK_INPUT;
+  err = Gestalt (gestaltSystemVersion, &response);
+  UNBLOCK_INPUT;
+  if (err != noErr || response < 0x1050)
+    return Qnil;
+#endif
+  check_mac ();
+
+  frame_or_window = args[0];
+  if (NILP (frame_or_window))
+    frame_or_window = selected_frame;
+  if (WINDOWP (frame_or_window))
+    CHECK_LIVE_WINDOW (frame_or_window);
+  else
+    CHECK_LIVE_FRAME (frame_or_window);
+
+  if (mac_get_frame_window_alpha ((FRAMEP (frame_or_window)
+				   ? XFRAME (frame_or_window)
+				   : WINDOW_XFRAME (XWINDOW (frame_or_window))),
+				  &alpha) != noErr
+      || alpha != 1.0)
+    return Qnil;
+
+  properties = Flist (nargs - 1, args + 1);
+
+  count = SPECPDL_INDEX ();
+  specbind (Qredisplay_dont_pause, Qt);
+  redisplay_preserve_echo_area (30);
+  unbind_to (count, Qnil);
+
+  BLOCK_INPUT;
+  mac_start_animation (frame_or_window, properties);
+  UNBLOCK_INPUT;
+
+  return Qt;
+#else  /* MAC_OS_X_VERSION_MAX_ALLOWED < 1050 */
+  return Qnil;
+#endif	/* MAC_OS_X_VERSION_MAX_ALLOWED < 1050 */
+}
+
+
+/***********************************************************************
 			    Initialization
  ***********************************************************************/
 
@@ -4051,6 +4221,23 @@ syms_of_macfns ()
   staticpro (&Qcancel_timer);
   Qfont_param = intern_c_string ("font-parameter");
   staticpro (&Qfont_param);
+  QCdirection = intern_c_string (":direction");
+  staticpro (&QCdirection);
+  QCduration = intern_c_string (":duration");
+  staticpro (&QCduration);
+  Qfade_in = intern_c_string ("fade-in");	staticpro (&Qfade_in);
+  Qmove_in = intern_c_string ("move-in");	staticpro (&Qmove_in);
+  Qbars_swipe = intern_c_string ("bars-swipe");	staticpro (&Qbars_swipe);
+  Qcopy_machine = intern_c_string ("copy-machine");
+  staticpro (&Qcopy_machine);
+  Qdissolve = intern_c_string ("dissolve");	staticpro (&Qdissolve);
+  Qflash = intern_c_string ("flash");		staticpro (&Qflash);
+  Qmod = intern_c_string ("mod");		staticpro (&Qmod);
+  Qpage_curl = intern_c_string ("page-curl");	staticpro (&Qpage_curl);
+  Qpage_curl_with_shadow = intern_c_string ("page-curl-with-shadow");
+  staticpro (&Qpage_curl_with_shadow);
+  Qripple = intern_c_string ("ripple");		staticpro (&Qripple);
+  Qswipe = intern_c_string ("swipe");		staticpro (&Qswipe);
   /* This is the end of symbol initialization.  */
 
   /* Text property `display' should be nonsticky by default.  */
@@ -4138,7 +4325,7 @@ Chinese, Japanese, and Korean.  */);
     doc: /* Version info for Carbon API.  */);
   {
     OSErr err;
-    UInt32 response;
+    SInt32 response;
     char carbon_version[40] = "Unknown";
 
     err = Gestalt (gestaltCarbonVersion, &response);
@@ -4203,6 +4390,7 @@ Chinese, Japanese, and Korean.  */);
 
   defsubr (&Sx_select_font);
   defsubr (&Smac_set_font_panel_visible_p);
+  defsubr (&Smac_start_animation);
 }
 
 /* arch-tag: d7591289-f374-4377-b245-12f5dbbb8edc
