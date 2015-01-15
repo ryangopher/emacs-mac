@@ -1,5 +1,5 @@
 /* Definitions and headers for AppKit framework on the Mac OS.
-   Copyright (C) 2008, 2009  YAMAMOTO Mitsuharu
+   Copyright (C) 2008, 2009, 2010  YAMAMOTO Mitsuharu
 
 This file is part of GNU Emacs Carbon+AppKit port.
 
@@ -42,6 +42,10 @@ typedef unsigned int NSUInteger;
 @protocol NSWindowDelegate <NSObject> @end
 @protocol NSToolbarDelegate <NSObject> @end
 @protocol NSMenuDelegate <NSObject> @end
+#endif
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED < 1050
+@protocol NSTextInputClient @end
 #endif
 
 @interface NSData (Emacs)
@@ -121,6 +125,10 @@ typedef unsigned int NSUInteger;
   /* Selector used for resuming suspended left mouse tracking.  */
   SEL trackingResumeSelector;
 
+  /* Whether a service provider for Emacs is registered as of
+     applicationWillFinishLaunching: or not.  */
+  BOOL serviceProviderRegistered;
+
   /* Whether conflicting Cocoa's text system key bindings (e.g., C-q)
      are disabled or not.  */
   BOOL conflictingKeyBindingsDisabled;
@@ -134,6 +142,7 @@ typedef unsigned int NSUInteger;
 - (void)storeEvent:(struct input_event *)bufp;
 - (void)setTrackingObject:(id)object andResumeSelector:(SEL)selector;
 - (int)handleQueuedNSEventsWithHoldingQuitIn:(struct input_event *)bufp;
+- (void)cancelHelpEchoForEmacsFrame:(struct frame *)f;
 - (BOOL)conflictingKeyBindingsDisabled;
 - (void)setConflictingKeyBindingsDisabled:(BOOL)flag;
 @end
@@ -195,7 +204,7 @@ typedef unsigned int NSUInteger;
 /* Class for Emacs view that also handles input events.  Used by
    ordinary frames.  */
 
-@interface EmacsView : EmacsTipView <NSTextInput>
+@interface EmacsView : EmacsTipView <NSTextInput, NSTextInputClient>
 {
   /* Target object to which the EmacsView object sends actions.  */
   id target;
@@ -258,7 +267,7 @@ typedef unsigned int NSUInteger;
 
 /* Just for avoiding warnings about undocumented methods in NSScroller.  */
 
-@interface NSScroller (Emacs)
+@interface NSScroller (Undocumented)
 - (void)drawArrow:(NSUInteger)position highlightPart:(NSInteger)part;
 @end
 
@@ -361,8 +370,12 @@ typedef unsigned int NSUInteger;
 @interface EmacsMenu : NSMenu
 @end
 
+@interface NSEvent (Undocumented)
+- (EventRef)_eventRef;
+@end
+
 @interface EmacsController (Menu) <NSMenuDelegate>
-- (void)trackMenubar;
+- (void)trackMenuBar;
 @end
 
 @interface EmacsDialogView : NSView

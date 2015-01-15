@@ -1,3 +1,55 @@
+* emacs-22.3-appkit-1.10 (2010-03-11)
+Build instruction is slightly changed.  See `README-carbon+appkit'.
+
+** Fixed bugs
+
+*** Mouse highlighting is not updated on popup (de)activations.
+
+*** Command line options specifying temporary preferences settings
+(e.g., -AppleDisplayScaleFactor 1.25 -AppleAntiAliasingThreshold 14),
+just as in other Cocoa applications, are regarded as if they are
+specifying filenames to edit.
+
+*** Menu selection via search field in the Help menu doesn't work on
+Mac OS X 10.6.
+Note: this seems to be still unstable on Mac OS X 10.5.8, crashing at
+the function TestMenuSystemAttributes in the HIToolbox framework.
+I've experienced similar crashes even with Safari on that version.
+
+*** The function `menu-bar-open' is unimplemented.
+
+*** Dictionary popped up with Command-Control-D is misplaced when a
+word in a partially-visible line is looked up.
+
+*** Drag-n-dropping a file into a Message buffer opens the file
+instead of adding it as an attachment.
+
+*** Crash when a text is drag-n-dropped into the Dock icon.
+
+*** Not registered as a service provider on Mac OS X 10.4 and earlier,
+even if there is no other instance of running Emacs.
+
+*** Modifier mapping for the `fn' key does not work with the `A' key.
+
+** Improvements
+
+*** When the clipboard has both textual and image data, yank inserts
+the former and push both into the kill ring so the latter can be
+inserted with yank-pop afterwards.
+This includes the following change for lisp/simple.el:
+http://lists.gnu.org/archive/html/emacs-devel/2007-10/msg01010.html
+
+*** Scroll bars are excluded from flashed area for visible bell in a
+consistent way.
+
+*** Several keyboard shortcuts (notably those for Keyboard Navigation)
+listed in System Preferences now work.
+
+*** Reverse conversion in Kotoeri works even without selection.
+Hitting Eisu/Kana key on JIS keyboard (or Control-Shift-;/J/K on US
+keyboard) twice also works.
+
+
 * emacs-22.3-appkit-1.9 (2009-11-01)
 
 ** Improvements

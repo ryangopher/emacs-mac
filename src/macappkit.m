@@ -1,5 +1,5 @@
 /* Functions for GUI implemented with Cocoa AppKit on the Mac OS.
-   Copyright (C) 2008, 2009  YAMAMOTO Mitsuharu
+   Copyright (C) 2008, 2009, 2010  YAMAMOTO Mitsuharu
 
 This file is part of GNU Emacs Carbon+AppKit port.
 
@@ -403,19 +403,19 @@ static IMP impClose, impOrderOut;
   if (method_getImplementation != NULL)
 #endif
     {
-      Method methodClose =
-	class_getInstanceMethod ([NSWindow class], @selector(close));
-      Method methodOrderOut =
-	class_getInstanceMethod ([NSWindow class], @selector(orderOut:));
       Method methodCloseNew =
 	class_getInstanceMethod ([self class], @selector(close));
       Method methodOrderOutNew =
 	class_getInstanceMethod ([self class], @selector(orderOut:));
       IMP impCloseNew = method_getImplementation (methodCloseNew);
       IMP impOrderOutNew = method_getImplementation (methodOrderOutNew);
+      const char *typeCloseNew = method_getTypeEncoding (methodCloseNew);
+      const char *typeOrderOutNew = method_getTypeEncoding (methodOrderOutNew);
 
-      impClose = method_setImplementation (methodClose, impCloseNew);
-      impOrderOut = method_setImplementation (methodOrderOut, impOrderOutNew);
+      impClose = class_replaceMethod ([NSWindow class], @selector(close),
+				      impCloseNew, typeCloseNew);
+      impOrderOut = class_replaceMethod ([NSWindow class], @selector(orderOut:),
+					 impOrderOutNew, typeOrderOutNew);
     }
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 1050 && MAC_OS_X_VERSION_MIN_REQUIRED >= 1020
   else				/* method_getImplementation == NULL */
@@ -579,12 +579,20 @@ install_dispatch_handler ()
 {
   OSStatus err = noErr;
 
-  if (err == noErr)
+  /* If this is installed to the event dispatcher on Mac OS X 10.6,
+     then keyboard navigation of the search field in the Help menu
+     stops working.  Note that getting the script-language record in
+     this way still works on 32-bit binary, but we abandon it.  */
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5)
     {
       static const EventTypeSpec specs[] =
 	{{kEventClassTextInput, kEventTextInputUpdateActiveInputArea},
 	 {kEventClassTextInput, kEventTextInputUnicodeForKeyEvent}};
 
+      /* Dummy object creation/destruction so +[NSTSMInputContext
+	 initialize] can install a handler to the event dispatcher
+	 target before install_dispatch_handler does that.  */
+      [[[(NSClassFromString (@"NSTSMInputContext")) alloc] init] release];
       err = InstallEventHandler (GetEventDispatcherTarget (),
 				 mac_handle_text_input_event,
 				 GetEventTypeCount (specs), specs, NULL, NULL);
@@ -707,6 +715,7 @@ extern UInt32 mac_mapped_modifiers P_ ((UInt32, UInt32));
 {
   [EmacsPosingWindow setup];
   [NSFontManager setFontPanelFactory:[EmacsFontPanel class]];
+  serviceProviderRegistered = mac_service_provider_registered_p ();
   init_menu_bar ();
   init_apple_event_handler ();
 }
@@ -718,13 +727,9 @@ extern UInt32 mac_mapped_modifiers P_ ((UInt32, UInt32));
      speaking, there's a race condition, but it is not critical
      anyway.  Unfortunately, Mac OS X 10.4 still displays warnings at
      -[NSApplication setServicesMenu:] or the first event loop.  */
-  if (!mac_service_provider_registered_p ())
+  if (!serviceProviderRegistered)
     [NSApp setServicesProvider:self];
 
-  /* Dummy object creation/destruction so +[NSTSMInputContext
-     initialize] can install a handler to the event dispatcher target
-     before install_dispatch_handler does that.  */
-  [[[(NSClassFromString (@"NSTSMInputContext")) alloc] init] release];
   install_dispatch_handler ();
 
   /* Exit from the main event loop.  */
@@ -933,7 +938,7 @@ static EventRef peek_if_next_event_activates_menu_bar P_ ((void));
 		}
 	    }
 
-	  mask = (trackingObject == nil || dpyinfo->saved_menu_event == NULL
+	  mask = (trackingObject == nil && dpyinfo->saved_menu_event == NULL
 		  ? NSAnyEventMask : (NSAnyEventMask & ~ANY_MOUSE_EVENT_MASK));
 	  event = [NSApp nextEventMatchingMask:mask untilDate:expiration
 			 inMode:NSDefaultRunLoopMode dequeue:YES];
@@ -1014,6 +1019,22 @@ emacs_windows_need_display_p (with_resize_control_p)
 	[NSApp postDummyEvent];
       else
 	x_flush (NULL);
+    }
+}
+
+- (void)cancelHelpEchoForEmacsFrame:(struct frame *)f
+{
+  /* Generate a nil HELP_EVENT to cancel a help-echo.
+     Do it only if there's something to cancel.
+     Otherwise, the startup message is cleared when the
+     mouse leaves the frame.  */
+  if (any_help_event_p)
+    {
+      Lisp_Object frame;
+
+      XSETFRAME (frame, f);
+      help_echo_string = Qnil;
+      gen_help_event (Qnil, frame, Qnil, Qnil, 0);
     }
 }
 
@@ -1169,6 +1190,8 @@ extern OSStatus mac_restore_keyboard_input_source P_ ((void));
 extern void mac_save_keyboard_input_source P_ ((void));
 
 static OSStatus mac_create_frame_tool_bar P_ ((FRAME_PTR f));
+static void mac_note_frame_enter P_ ((struct frame *));
+static void mac_note_frame_leave P_ ((struct frame *));
 
 #define DEFAULT_NUM_COLS (80)
 #define RESIZE_CONTROL_WIDTH (15)
@@ -1344,6 +1367,8 @@ static OSStatus mac_create_frame_tool_bar P_ ((FRAME_PTR f));
   if (inev.kind != NO_EVENT)
     [[NSApp delegate] storeEvent:&inev];
 
+  mac_note_frame_enter (f);
+
   [[NSApp delegate] setConflictingKeyBindingsDisabled:YES];
 }
 
@@ -1357,6 +1382,8 @@ static OSStatus mac_create_frame_tool_bar P_ ((FRAME_PTR f));
   mac_focus_changed (0, FRAME_MAC_DISPLAY_INFO (f), f, &inev);
   if (inev.kind != NO_EVENT)
     [[NSApp delegate] storeEvent:&inev];
+
+  mac_note_frame_leave (f);
 
   [[NSApp delegate] setConflictingKeyBindingsDisabled:NO];
 }
@@ -2157,6 +2184,19 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
 
 @implementation EmacsView
 
++ (void)initialize
+{
+  if (self == [EmacsView class])
+    {
+      NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+      NSDictionary *appDefaults =
+	[NSDictionary dictionaryWithObject:@"NO"
+				    forKey:@"AppleMomentumScrollSupported"];
+
+      [defaults registerDefaults:appDefaults];
+    }
+}
+
 - (id)initWithFrame:(NSRect)frameRect
 {
   self = [super initWithFrame:frameRect];
@@ -2487,7 +2527,7 @@ static OSStatus
 get_text_input_script_language (slrec)
      ScriptLanguageRecord *slrec;
 {
-  OSStatus err = noErr;
+  OSStatus err = eventParameterNotFoundErr;
 
   if (current_text_input_event)
     {
@@ -2506,20 +2546,11 @@ get_text_input_script_language (slrec)
 				 typeIntlWritingCode, NULL,
 				 sizeof (ScriptLanguageRecord), NULL, slrec);
     }
-  else
-    {
-      slrec->fScript = GetScriptManagerVariable (smKeyScript);
-#if __LP64__
-      slrec->fLanguage = kTextLanguageDontCare;
-#else
-      slrec->fLanguage = GetScriptVariable (slrec->fScript, smScriptLang);
-#endif
-    }
 
   return err;
 }
 
-- (void)insertText:(id)aString
+- (void)insertText:(id)aString replacementRange:(NSRange)replacementRange;
 {
   OSStatus err;
   struct frame *f = [self emacsFrame];
@@ -2583,6 +2614,13 @@ get_text_input_script_language (slrec)
 			  Fcons (build_string ("intl"), arg)));
     }
 
+  if (!NSEqualRanges (replacementRange, NSMakeRange (NSNotFound, 0)))
+    arg = Fcons (Fcons (build_string ("replacementRange"),
+			Fcons (build_string ("Lisp"),
+			       Fcons (make_number (replacementRange.location),
+				      make_number (replacementRange.length)))),
+		 arg);
+
   inputEvent.kind = MAC_APPLE_EVENT;
   inputEvent.x = Qtext_input;
   inputEvent.y = Qinsert_text;
@@ -2606,12 +2644,44 @@ get_text_input_script_language (slrec)
     }
 }
 
+- (void)insertText:(id)aString
+{
+  NSRange replacementRange = NSMakeRange (NSNotFound, 0);
+
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_4
+      && [aString isKindOfClass:[NSAttributedString class]])
+    {
+      NSString *rangeString =
+	[aString attribute:@"NSTextInputReplacementRangeAttributeName"
+		   atIndex:0 effectiveRange:NULL];
+
+      if (rangeString)
+	{
+	  NSRange attributesRange;
+	  NSRange aStringRange =
+	    NSMakeRange (0, [(NSAttributedString *)aString length]);
+	  NSDictionary *attributes = [aString attributesAtIndex:0
+					  longestEffectiveRange:&attributesRange
+							inRange:aStringRange];
+
+	  if (NSEqualRanges (attributesRange, aStringRange)
+	      && [attributes count] == 1)
+	    aString = [aString string];
+
+	  replacementRange = NSRangeFromString (rangeString);
+	}
+    }
+
+  [self insertText:aString replacementRange:replacementRange];
+}
+
 - (void)doCommandBySelector:(SEL)aSelector
 {
   keyEventsInterpreted = NO;
 }
 
-- (void)setMarkedText:(id)aString selectedRange:(NSRange)selRange
+- (void)setMarkedText:(id)aString selectedRange:(NSRange)selectedRange
+     replacementRange:(NSRange)replacementRange;
 {
   OSStatus err;
   struct frame *f = [self emacsFrame];
@@ -2629,10 +2699,18 @@ get_text_input_script_language (slrec)
 			  Fcons (build_string ("intl"), arg)));
     }
 
+  if (!NSEqualRanges (replacementRange, NSMakeRange (NSNotFound, 0)))
+    arg = Fcons (Fcons (build_string ("replacementRange"),
+			Fcons (build_string ("Lisp"),
+			       Fcons (make_number (replacementRange.location),
+				      make_number (replacementRange.length)))),
+		 arg);
+
   arg = Fcons (Fcons (build_string ("selectedRange"),
 		      Fcons (build_string ("Lisp"),
-			     Fcons (make_number (selRange.location),
-				    make_number (selRange.length)))), arg);
+			     Fcons (make_number (selectedRange.location),
+				    make_number (selectedRange.length)))),
+	       arg);
 
   EVENT_INIT (inputEvent);
   inputEvent.kind = MAC_APPLE_EVENT;
@@ -2646,6 +2724,25 @@ get_text_input_script_language (slrec)
   inputEvent.timestamp = [[NSApp currentEvent] timestamp] * 1000;
   XSETFRAME (inputEvent.frame_or_window, f);
   [self sendAction:action to:target];
+}
+
+- (void)setMarkedText:(id)aString selectedRange:(NSRange)selRange
+{
+  NSRange replacementRange = NSMakeRange (NSNotFound, 0);
+
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_4
+      && [aString isKindOfClass:[NSAttributedString class]])
+    {
+      NSString *rangeString =
+	[aString attribute:@"NSTextInputReplacementRangeAttributeName"
+		   atIndex:0 effectiveRange:NULL];
+
+      if (rangeString)
+	replacementRange = NSRangeFromString (rangeString);
+    }
+
+  [self setMarkedText:aString selectedRange:selRange
+     replacementRange:replacementRange];
 }
 
 - (void)unmarkText
@@ -2678,16 +2775,17 @@ extern void mac_ax_selected_text_range P_ ((struct frame *, CFRange *));
 extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 						       int, int, UniChar *));
 
-- (NSAttributedString *)attributedSubstringFromRange:(NSRange)theRange
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)aRange
+						actualRange:(NSRangePointer)actualRange;
 {
   NSRange markedRange = [self markedRange];
   NSAttributedString *result = nil;
 
   if ([self hasMarkedText]
-      && NSEqualRanges (NSUnionRange (markedRange, theRange), markedRange))
+      && NSEqualRanges (NSUnionRange (markedRange, aRange), markedRange))
     {
-      NSRange range = NSMakeRange (theRange.location - markedRange.location,
-				   theRange.length);
+      NSRange range = NSMakeRange (aRange.location - markedRange.location,
+				   aRange.length);
 
       if ([markedText isKindOfClass:[NSAttributedString class]])
 	result = [markedText attributedSubstringFromRange:range];
@@ -2698,6 +2796,9 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 	  result = [[[NSAttributedString alloc] initWithString:string]
 		     autorelease];
 	}
+
+      if (actualRange)
+	*actualRange = aRange;
     }
   else if (poll_suppress_count != 0 || NILP (Vinhibit_quit))
     {
@@ -2714,9 +2815,9 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 	  int start, end, begv = BUF_BEGV (b), zv = BUF_ZV (b);
 
 	  /* The documentation says "An implementation of this method
-	     should be prepared for theRange to be out-of-bounds".  */
-	  start = begv + theRange.location;
-	  end = start + theRange.length;
+	     should be prepared for aRange to be out-of-bounds".  */
+	  start = begv + aRange.location;
+	  end = start + aRange.length;
 	  if (start < begv)
 	    start = begv;
 	  else if (start > zv)
@@ -2728,7 +2829,7 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 
 	  if (start < end)
 	    {
-	      int length = end - start;
+	      NSUInteger length = end - start;
 	      unichar *characters = xmalloc (length * sizeof (unichar));
 
 	      if (mac_store_buffer_text_to_unicode_chars (b, start, end,
@@ -2747,20 +2848,18 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 		    {
 		      NSFont *font = nil;
 		      int hpos, vpos, x, y;
+		      struct glyph_row *row;
+		      struct glyph *glyph;
 
-		      if (fast_find_position (w, start + i, &hpos, &vpos,
-					      &x, &y, Qnil))
-			{
-			  struct glyph_row *row = MATRIX_ROW (w->current_matrix,
-							      vpos);
-			  struct glyph *glyph = row->glyphs[TEXT_AREA] + hpos;
-
-			  if (glyph->type == CHAR_GLYPH
-			      && !glyph->glyph_not_available_p)
-			    font = [NSFont fontWithFace:(FACE_FROM_ID
-							 (f, glyph->face_id))];
-			}
-
+		      fast_find_position (w, start + i, &hpos, &vpos,
+					  &x, &y, Qnil);
+		      row = MATRIX_ROW (w->current_matrix, vpos);
+		      glyph = row->glyphs[TEXT_AREA] + hpos;
+		      if (glyph->charpos == start + i
+			  && glyph->type == CHAR_GLYPH
+			  && !glyph->glyph_not_available_p)
+			font = [NSFont fontWithFace:(FACE_FROM_ID
+						     (f, glyph->face_id))];
 		      if (font == nil)
 			font = [NSFont fontWithFace:(FACE_FROM_ID
 						     (f, DEFAULT_FACE_ID))];
@@ -2770,6 +2869,9 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 		    }
 		  [attributedString endEditing];
 		  result = attributedString;
+
+		  if (actualRange)
+		    *actualRange = NSMakeRange (start - begv, length);
 		}
 	      xfree (characters);
 	    }
@@ -2777,6 +2879,11 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
     }
 
   return result;
+}
+
+- (NSAttributedString *)attributedSubstringFromRange:(NSRange)theRange
+{
+  return [self attributedSubstringForProposedRange:theRange actualRange:NULL];
 }
 
 - (NSRange)markedRange
@@ -2787,7 +2894,8 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
     return NSMakeRange (NSNotFound, 0);
 
   if (OVERLAYP (Vmac_ts_active_input_overlay)
-      && !NILP (Foverlay_get (Vmac_ts_active_input_overlay, Qbefore_string)))
+      && !NILP (Foverlay_get (Vmac_ts_active_input_overlay, Qbefore_string))
+      && !NILP (Fmarker_buffer (OVERLAY_START (Vmac_ts_active_input_overlay))))
     location = (marker_position (OVERLAY_START (Vmac_ts_active_input_overlay))
 		- BEGV);
 
@@ -2805,7 +2913,8 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
   return result;
 }
 
-- (NSRect)firstRectForCharacterRange:(NSRange)theRange
+- (NSRect)firstRectForCharacterRange:(NSRange)aRange
+			 actualRange:(NSRangePointer)actualRange;
 {
   NSRect rect = NSZeroRect;
   struct frame *f = NULL;
@@ -2813,22 +2922,48 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
   struct glyph *glyph;
   struct glyph_row *row;
   int hpos, vpos, x, y, h;
+  NSRange markedRange = [self markedRange];
 
-  if (theRange.location >= NSNotFound)
+  if (aRange.location >= NSNotFound
+      || ([self hasMarkedText]
+	  && NSEqualRanges (NSUnionRange (markedRange, aRange), markedRange)))
     {
-      /* Probably asking the location of the marked text in the echo area.  */
-      if ([self hasMarkedText] && WINDOWP (echo_area_window))
+      /* Probably asking the location of the marked text.  Strictly
+	 speaking, it is impossible to get the correct one in general
+	 because events pending in the Lisp queue may change some
+	 states about display.  In particular, this method might be
+	 called before displaying the marked text.
+
+	 We return the current cursor position either in the selected
+	 window or in the echo area as an approximate value.  We first
+	 try the echo area when Vmac_ts_active_input_overlay doesn't
+	 have the before-string property, and if the cursor glyph is
+	 not found there, then return the cursor position of the
+	 selected window.  */
+      glyph = NULL;
+      if (!(OVERLAYP (Vmac_ts_active_input_overlay)
+	    && !NILP (Foverlay_get (Vmac_ts_active_input_overlay,
+				    Qbefore_string)))
+	  && WINDOWP (echo_area_window))
 	{
 	  w = XWINDOW (echo_area_window);
 	  f = WINDOW_XFRAME (w);
 	  glyph = get_phys_cursor_glyph (w);
-	  if (glyph)
-	    {
-	      row = MATRIX_ROW (w->current_matrix, w->phys_cursor.vpos);
-	      get_phys_cursor_geometry (w, row, glyph, &x, &y, &h);
+	}
+      if (glyph == NULL)
+	{
+	  f = [self emacsFrame];
+	  w = XWINDOW (f->selected_window);
+	  glyph = get_phys_cursor_glyph (w);
+	}
+      if (glyph)
+	{
+	  row = MATRIX_ROW (w->current_matrix, w->phys_cursor.vpos);
+	  get_phys_cursor_geometry (w, row, glyph, &x, &y, &h);
 
-	      rect = NSMakeRect (x, y, w->phys_cursor_width, h);
-	    }
+	  rect = NSMakeRect (x, y, w->phys_cursor_width, h);
+	  if (actualRange)
+	    *actualRange = aRange;
 	}
     }
   else
@@ -2845,19 +2980,42 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 	  && XINT (w->last_modified) == BUF_MODIFF (b)
 	  && XINT (w->last_overlay_modified) == BUF_OVERLAY_MODIFF (b))
 	{
-	  int charpos = theRange.location + BUF_BEGV (b);
+	  int charpos = BUF_BEGV (b) + aRange.location;
+	  struct glyph *end;
+	  int width = 0;
 
-	  if (fast_find_position (w, charpos, &hpos, &vpos, &x, &y, Qnil))
+	  fast_find_position (w, charpos, &hpos, &vpos, &x, &y, Qnil);
+	  row = MATRIX_ROW (w->current_matrix, vpos);
+	  glyph = row->glyphs[TEXT_AREA] + hpos;
+	  if (charpos < glyph->charpos
+	      && glyph->charpos < charpos + aRange.length)
 	    {
-	      row = MATRIX_ROW (w->current_matrix, vpos);
-	      glyph = row->glyphs[TEXT_AREA] + hpos;
-
-	      rect = NSMakeRect (WINDOW_TEXT_TO_FRAME_PIXEL_X (w, x),
-				 WINDOW_TO_FRAME_PIXEL_Y (w, y),
-				 glyph->pixel_width, row->visible_height);
+	      aRange.location += glyph->charpos - charpos;
+	      aRange.length -= glyph->charpos - charpos;
+	      charpos = glyph->charpos;
 	    }
+	  end = row->glyphs[TEXT_AREA] + row->used[TEXT_AREA];
+
+	  while (glyph < end
+		 && !INTEGERP (glyph->object)
+		 && (!BUFFERP (glyph->object)
+		     || glyph->charpos < charpos + aRange.length))
+	    {
+	      width += glyph->pixel_width;
+	      ++glyph;
+	    }
+
+	  rect = NSMakeRect (WINDOW_TEXT_TO_FRAME_PIXEL_X (w, x),
+			     WINDOW_TO_FRAME_PIXEL_Y (w, y),
+			     width, row->height);
+	  if (actualRange)
+	    *actualRange = NSMakeRange (aRange.location,
+					glyph->charpos - charpos);
 	}
     }
+
+  if (actualRange && NSEqualRects (rect, NSZeroRect))
+    *actualRange = NSMakeRange (NSNotFound, 0);
 
   if (f)
     {
@@ -2869,6 +3027,11 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
     }
 
   return rect;
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)theRange
+{
+  return [self firstRectForCharacterRange:theRange actualRange:NULL];
 }
 
 - (NSUInteger)characterIndexForPoint:(NSPoint)thePoint
@@ -2918,7 +3081,11 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 
 - (NSArray *)validAttributesForMarkedText
 {
-  return nil;
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_4)
+    return [NSArray
+	     arrayWithObject:@"NSTextInputReplacementRangeAttributeName"];
+  else
+    return nil;
 }
 
 - (NSString *)string
@@ -4607,6 +4774,51 @@ mac_event_to_emacs_modifiers (event)
   return mac_to_emacs_modifiers (modifiers, 0);
 }
 
+/* Called when an EnterNotify event would happen for an Emacs window
+   if it were on X11.  */
+
+static void
+mac_note_frame_enter (f)
+     struct frame *f;
+{
+  Point mouse_pos;
+
+  mac_get_frame_mouse (f, &mouse_pos);
+  /* EnterNotify counts as mouse movement,
+     so update things that depend on mouse position.  */
+  note_mouse_movement (f, &mouse_pos);
+}
+
+/* Called when a LeaveNotify event would happen for an Emacs window if
+   it were on X11.  */
+
+static void
+mac_note_frame_leave (f)
+     struct frame *f;
+{
+  struct mac_display_info *dpyinfo = FRAME_MAC_DISPLAY_INFO (f);
+
+  /* This corresponds to LeaveNotify for an X11 window for an Emacs
+     frame.  */
+  if (f == dpyinfo->mouse_face_mouse_frame)
+    {
+      /* If we move outside the frame, then we're
+	 certainly no longer on any text in the
+	 frame.  */
+      clear_mouse_face (dpyinfo);
+      dpyinfo->mouse_face_mouse_frame = 0;
+      x_flush (f);
+    }
+
+  [[NSApp delegate] cancelHelpEchoForEmacsFrame:f];
+
+  /* This corresponds to EnterNotify for an X11 window for some
+     popup (from note_mouse_movement in xterm.c).  */
+  f->mouse_moved = 1;
+  note_mouse_highlight (f, -1, -1);
+  last_mouse_glyph_frame = 0;
+}
+
 /* Run the current run loop in the default mode until some input
    happens or TIMEOUT seconds passes unless it is negative.  Return
    true if timeout occurs first.  */
@@ -5178,6 +5390,7 @@ extern void find_and_call_menu_selection P_ ((FRAME_PTR, int, Lisp_Object,
 extern void set_frame_menubar P_ ((FRAME_PTR, int, int));
 
 static void update_services_menu_types P_ ((void));
+static void mac_fake_menu_bar_click P_ ((EventPriority));
 
 @implementation NSMenu (Emacs)
 
@@ -5335,19 +5548,34 @@ static void update_services_menu_types P_ ((void));
   firstResponder = [window firstResponder];
   if ([firstResponder isMemberOfClass:[EmacsView class]])
     {
-      /* This condition is a workaround for the problem that
-	 Command-Control-D does not pop up dictionary on Mac OS X
-	 10.6.  */
-      if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5
-	  || !([theEvent keyCode] == 0x02 /* kVK_ANSI_D */
-	       && (([theEvent modifierFlags] & ANY_KEY_MODIFIER_FLAGS_MASK)
-		   == (NSCommandKeyMask | NSControlKeyMask))))
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1030
+      extern Boolean _IsSymbolicHotKeyEvent P_ ((EventRef, UInt32 *, Boolean *)) AVAILABLE_MAC_OS_X_VERSION_10_3_AND_LATER;
+      UInt32 code;
+      Boolean isEnabled;
+
+      if (
+#if MAC_OS_X_VERSION_MIN_REQUIRED == 1020
+	  _IsSymbolicHotKeyEvent != NULL &&
+#endif
+	  _IsSymbolicHotKeyEvent ([theEvent _eventRef], &code, &isEnabled)
+	  && isEnabled)
+	{
+	  if (code == 7)	/* Move focus to the menu bar */
+	    {
+	      mac_fake_menu_bar_click (kEventPriorityStandard);
+	      return YES;
+	    }
+	}
+      else
+#endif
 	{
 	  /* Note: this is not necessary for binaries built on Mac OS
 	     X 10.5 because -[NSWindow sendEvent:] now sends keyDown:
 	     to the first responder even if the command-key modifier
 	     is set when it is not a key equivalent.  But we keep this
-	     for binary compatibility.  */
+	     for binary compatibility.
+	     Update: this is necessary for passing Control-Tab to
+	     Emacs on Mac OS X 10.5 and later.  */
 	  [firstResponder keyDown:theEvent];
 
 	  return YES;
@@ -5434,7 +5662,7 @@ restore_show_help_function (old_show_help_function)
    we can't pop down an error dialog caused by a Service invocation,
    for example.  */
 
-- (void)trackMenubar
+- (void)trackMenuBar
 {
   if ([NSApp isRunning])
     {
@@ -5446,28 +5674,38 @@ restore_show_help_function (old_show_help_function)
 	  NSEvent *event = [NSApp nextEventMatchingMask:NSAnyEventMask
 				  untilDate:expiration
 				  inMode:NSDefaultRunLoopMode dequeue:YES];
+	  NSDate *limitDate;
 
 	  if (event == nil)
 	    {
 	      /* There can be a pending mouse down event on the menu
-		 bar at least on 10.5 with Command-Shift-/ -> search
-		 with keyword -> select.  */
-	      if (peek_if_next_event_activates_menu_bar () == NULL)
-		break;
+		 bar at least on Mac OS X 10.5 with Command-Shift-/ ->
+		 search with keyword -> select.  Also, some
+		 kEventClassMenu event is still pending on Mac OS X
+		 10.6 when selecting menu item via search field on the
+		 Help menu.  */
+	      if (peek_next_event ())
+		continue;
 	    }
-	  else if (NSEventMaskFromType ([event type]) & ANY_MOUSE_EVENT_MASK)
-	    [NSApp sendEvent:event];
 	  else
 	    {
-	      [NSApp postEvent:event atStart:YES];
-	      break;
+	      [NSApp sendEvent:event];
+	      continue;
 	    }
+
+	  /* This seems to be necessary for selecting menu item via
+	     search field in the Help menu on Mac OS X 10.6.  */
+	  limitDate = [[NSRunLoop currentRunLoop]
+			limitDateForMode:NSDefaultRunLoopMode];
+	  if (limitDate == nil
+	      || [limitDate timeIntervalSinceNow] > 0)
+	    break;
 	}
     }
   else
     {
 #if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
-      [NSApp runTemporarilyWithBlock:^{[self trackMenubar];}];
+      [NSApp runTemporarilyWithBlock:^{[self trackMenuBar];}];
 #else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
@@ -5501,21 +5739,23 @@ x_activate_menubar (f)
      FRAME_PTR f;
 {
   struct mac_display_info *dpyinfo = FRAME_MAC_DISPLAY_INFO (f);
-  EventRef menu_event = dpyinfo->saved_menu_event;
-
-  if (menu_event == NULL)
-    return;
-
-  dpyinfo->saved_menu_event = NULL;
+  EventRef menu_event;
 
   set_frame_menubar (f, 0, 1);
   BLOCK_INPUT;
   update_services_menu_types ();
+  menu_event = dpyinfo->saved_menu_event;
+  if (menu_event)
+    {
+      dpyinfo->saved_menu_event = NULL;
+      PostEventToQueue (GetMainEventQueue (), menu_event, kEventPriorityHigh);
+      ReleaseEvent (menu_event);
+    }
+  else
+    mac_fake_menu_bar_click (kEventPriorityHigh);
   menu_item_selection = 0;
   popup_activated_flag = 1;
-  PostEventToQueue (GetMainEventQueue (), menu_event, kEventPriorityHigh);
-  ReleaseEvent (menu_event);
-  [[NSApp delegate] trackMenubar];
+  [[NSApp delegate] trackMenuBar];
   popup_activated_flag = 0;
   UNBLOCK_INPUT;
 
@@ -5583,12 +5823,12 @@ mac_fill_menubar (wv, deep_p)
      widget_value *wv;
      int deep_p;
 {
-  NSMenu *mainMenu = [NSApp mainMenu];
+  NSMenu *newMenu, *mainMenu = [NSApp mainMenu];
   NSInteger index, nitems = [mainMenu numberOfItems];
+  int needs_update_p = deep_p;
 
-  if (deep_p)
-    while (nitems > 1)
-      [mainMenu removeItemAtIndex:--nitems];
+  newMenu = [[EmacsMenu alloc] init];
+  [newMenu setAutoenablesItems:NO];
 
   for (index = 1; wv != NULL; wv = wv->next, index++)
     {
@@ -5597,27 +5837,24 @@ mac_fill_menubar (wv, deep_p)
 						    kCFStringEncodingMacRoman));
       NSMenu *submenu;
 
-      if (index < nitems)
+      if (!needs_update_p)
 	{
-	  submenu = [[mainMenu itemAtIndex:index] submenu];
-
-	  if (submenu && [submenu numberOfItems] == 0
-	      && [title isEqualToString:[submenu title]])
-	    {
-	      [title release];
-	      continue;
-	    }
+	  if (index >= nitems)
+	    needs_update_p = 1;
 	  else
-	    while (nitems > index)
-	      [mainMenu removeItemAtIndex:--nitems];
+	    {
+	      submenu = [[mainMenu itemAtIndex:index] submenu];
+	      if (!(submenu && [title isEqualToString:[submenu title]]))
+		needs_update_p = 1;
+	    }
 	}
 
       submenu = [[NSMenu alloc] initWithTitle:title];
       [submenu setAutoenablesItems:NO];
 
-      [mainMenu setSubmenu:submenu
-		forItem:[mainMenu addItemWithTitle:title action:nil
-				  keyEquivalent:@""]];
+      [newMenu setSubmenu:submenu
+		  forItem:[newMenu addItemWithTitle:title action:nil
+				      keyEquivalent:@""]];
       [title release];
 
       if (wv->contents)
@@ -5626,8 +5863,66 @@ mac_fill_menubar (wv, deep_p)
       [submenu release];
     }
 
-  while (nitems > index)
-    [mainMenu removeItemAtIndex:--nitems];
+  if (!needs_update_p && index != nitems)
+    needs_update_p = 1;
+
+  if (needs_update_p)
+    {
+      NSMenuItem *appleMenuItem = [[mainMenu itemAtIndex:0] retain];
+
+      [mainMenu removeItem:appleMenuItem];
+      [newMenu insertItem:appleMenuItem atIndex:0];
+      [appleMenuItem release];
+
+      [NSApp setMainMenu:newMenu];
+    }
+
+  [newMenu release];
+}
+
+static void
+mac_fake_menu_bar_click (priority)
+     EventPriority priority;
+{
+  OSStatus err = noErr;
+  const EventKind kinds[] = {kEventMouseDown, kEventMouseUp};
+  int i;
+
+  /* CopyEventAs is not available on Mac OS X 10.2.  */
+  for (i = 0; i < 2; i++)
+    {
+      EventRef event;
+
+      if (err == noErr)
+	err = CreateEvent (NULL, kEventClassMouse, kinds[i], 0,
+			   kEventAttributeNone, &event);
+      if (err == noErr)
+	{
+	  const Point point = {0, 10}; /* vertical, horizontal */
+	  const UInt32 modifiers = 0, count = 1;
+	  const EventMouseButton button = kEventMouseButtonPrimary;
+	  const struct {
+	    EventParamName name;
+	    EventParamType type;
+	    ByteCount size;
+	    const void *data;
+	  } params[] = {
+	    {kEventParamMouseLocation, typeQDPoint, sizeof (Point), &point},
+	    {kEventParamKeyModifiers, typeUInt32, sizeof (UInt32), &modifiers},
+	    {kEventParamMouseButton, typeMouseButton,
+	     sizeof (EventMouseButton), &button},
+	    {kEventParamClickCount, typeUInt32, sizeof (UInt32), &count}};
+	  int j;
+
+	  for (j = 0; j < sizeof (params) / sizeof (params[0]); j++)
+	    if (err == noErr)
+	      err = SetEventParameter (event, params[j].name, params[j].type,
+				       params[j].size, params[j].data);
+	  if (err == noErr)
+	    err = PostEventToQueue (GetMainEventQueue (), event, priority);
+	  ReleaseEvent (event);
+	}
+    }
 }
 
 static Lisp_Object
@@ -5664,12 +5959,15 @@ create_and_show_popup_menu (f, first_wv, x, y, for_click)
 {
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Popup"];
   EmacsView *emacsView = FRAME_EMACS_VIEW (f);
+  struct mac_display_info *dpyinfo = FRAME_MAC_DISPLAY_INFO (f);
   int specpdl_count = SPECPDL_INDEX ();
 
   [menu setAutoenablesItems:NO];
   [menu fillWithWidgetValue:first_wv->contents];
 
   record_unwind_protect (pop_down_menu, make_save_value (menu, 0));
+  if (dpyinfo->x_focus_frame)
+    mac_note_frame_leave (dpyinfo->x_focus_frame);
   popup_activated_flag = 1;
   if ([menu respondsToSelector:
 	      @selector(popUpMenuPositioningItem:atLocation:inView:)])
@@ -5690,6 +5988,8 @@ create_and_show_popup_menu (f, first_wv, x, y, for_click)
       [NSMenu popUpContextMenu:menu withEvent:event forView:emacsView];
     }
   popup_activated_flag = 0;
+  if (dpyinfo->x_focus_frame)
+    mac_note_frame_enter (dpyinfo->x_focus_frame);
   unbind_to (specpdl_count, Qnil);
 }
 
@@ -6476,6 +6776,9 @@ update_apple_event_handler ()
 static void
 init_apple_event_handler ()
 {
+  /* Force NSScriptSuiteRegistry to initialize here so our custom
+     handlers may not be overwritten by lazy initialization.  */
+  [NSScriptSuiteRegistry sharedScriptSuiteRegistry];
   registered_apple_event_specs = [[NSMutableSet alloc] initWithCapacity:0];
   update_apple_event_handler ();
   atexit (cleanup_all_suspended_apple_events);
@@ -6846,9 +7149,10 @@ handle_services_invocation (invocation)
 				   typeCFStringRef, sizeof (CFStringRef),
 				   &name);
 	  if (err == noErr)
-	    err = SetEventParameter (event, kEventParamServiceUserData,
-				     typeCFStringRef, sizeof (CFStringRef),
-				     &userData);
+	    if (userData)
+	      err = SetEventParameter (event, kEventParamServiceUserData,
+				       typeCFStringRef, sizeof (CFStringRef),
+				       &userData);
 	  if (err == noErr)
 	    err = mac_store_event_ref_as_apple_event (0, 0, Qservice,
 						      Qperform, event,

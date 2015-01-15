@@ -914,6 +914,26 @@ for instance using the window manager, then this produces a quit and
 #endif /* HAVE_DIALOGS */
 }
 
+
+#if USE_APPKIT
+DEFUN ("menu-bar-open", Fmenu_bar_open, Smenu_bar_open, 0, 1, "i",
+       doc: /* Start key navigation of the menu bar in FRAME.
+This initially opens the first menu bar item and you can then navigate with the
+arrow keys, select a menu entry with the return key or cancel with the
+escape key.  If FRAME has no menu bar this function does nothing.
+
+If FRAME is nil or not given, use the selected frame.  */)
+     (frame)
+     Lisp_Object frame;
+{
+  FRAME_PTR f = check_x_frame (frame);
+
+  x_activate_menubar (f);
+
+  return Qnil;
+}
+#endif
+
 /* Find the menu selection and store it in the keyboard buffer.
    F is the frame the menu is on.
    MENU_BAR_ITEMS_USED is the length of VECTOR.
@@ -2104,6 +2124,12 @@ syms_of_macmenu ()
 
   defsubr (&Sx_popup_menu);
   defsubr (&Smenu_or_popup_active_p);
+
+#if USE_APPKIT
+  defsubr (&Smenu_bar_open);
+  Ffset (intern ("accelerate-menu"), intern (Smenu_bar_open.symbol_name));
+#endif
+
 #ifdef HAVE_MENUS
   defsubr (&Sx_popup_dialog);
 #endif

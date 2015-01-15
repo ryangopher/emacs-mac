@@ -95,16 +95,21 @@ Carbon+AppKit port:
 
   b. Apply the patch `patch-carbon+appkit' to the source tree.
 
-  c. Copy `lisp/term/mac-win.elc' to
+  c. Copy `lisp/simple.elc' and `lisp/term/mac-win.elc' to
+     `EMACS_SOURCE_TOP/lisp/simple.elc' and
      `EMACS_SOURCE_TOP/lisp/term/mac-win.elc' by overriding the
-     latter.  (Alternatively, you can bytecompile
-     `EMACS_SOURCE_TOP/lisp/term/mac-win.el' that was patched in the
+     destination, respectively.  (Alternatively, you can bytecompile
+     `EMACS_SOURCE_TOP/lisp/simple.el' and
+     `EMACS_SOURCE_TOP/lisp/term/mac-win.el' that were patched in the
      previous step.)
 
   d. Copy `src/macappkit.h' and `src/macappkit.m' to
      `EMACS_SOURCE_TOP/src'.
 
   e. Build as usual with adding "--with-appkit" as a configure option.
+     Note: If you want build a 32-bit binary on Mac OS X 10.6 so it
+     can use QuickDraw Text mainly for CJK, then you may need to
+     specify CC='gcc -arch i386' at the configure time.
 
 Enjoy,
 

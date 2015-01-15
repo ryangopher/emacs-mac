@@ -53,6 +53,8 @@ MA 02110-1301, USA.
 	<string>6.0</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>22.3</string>
 	<key>CFBundleSignature</key>
 	<string>EMAx</string>
 	<key>CFBundleVersion</key>
@@ -68,6 +70,8 @@ MA 02110-1301, USA.
 			</array>
 		</dict>
 	</array>
+	<key>NSAppleScriptEnabled</key>
+	<string>YES</string>
   	<key>NSServices</key>
 	<array>
 		<dict>

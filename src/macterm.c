@@ -959,6 +959,42 @@ mac_invert_rectangle (f, x, y, width, height)
 #endif
 }
 
+/* Invert rectangles RECTANGLES[0], ..., RECTANGLES[N-1] in the frame F,
+   excluding scroll bar area.  */
+
+static void
+mac_invert_rectangles (f, rectangles, n)
+     struct frame *f;
+     const Rect *rectangles;
+     int n;
+{
+  int i;
+
+  for (i = 0; i < n; i++)
+    mac_invert_rectangle (f, rectangles[i].left, rectangles[i].top,
+			  rectangles[i].right - rectangles[i].left,
+			  rectangles[i].bottom - rectangles[i].top);
+  if (FRAME_HAS_VERTICAL_SCROLL_BARS (f))
+    {
+      Lisp_Object bar;
+
+      for (bar = FRAME_SCROLL_BARS (f); !NILP (bar);
+	   bar = XSCROLL_BAR (bar)->next)
+	{
+	  struct scroll_bar *b = XSCROLL_BAR (bar);
+	  Rect bar_rect, r;
+
+	  SetRect (&bar_rect, XINT (b->left), XINT (b->top),
+		   XINT (b->left) + XINT (b->width),
+		   XINT (b->top) + XINT (b->height));
+	  for (i = 0; i < n; i++)
+	    if (SectRect (rectangles + i, &bar_rect, &r))
+	      mac_invert_rectangle (f, r.left, r.top,
+				    r.right - r.left, r.bottom - r.top);
+	}
+    }
+}
+
 
 #if USE_ATSUI
 static OSStatus
@@ -4190,8 +4226,9 @@ XTflash (f)
   /* These will be the left and right margins of the rectangles.  */
   int flash_left = FRAME_INTERNAL_BORDER_WIDTH (f);
   int flash_right = FRAME_PIXEL_WIDTH (f) - FRAME_INTERNAL_BORDER_WIDTH (f);
-
   int width;
+  Rect rects[2];
+  int nrects;
 
   /* Don't flash the area between a scroll bar and the frame
      edge it is next to.  */
@@ -4211,24 +4248,32 @@ XTflash (f)
 
   width = flash_right - flash_left;
 
-  BLOCK_INPUT;
-
-  /* If window is tall, flash top and bottom line.  */
   if (height > 3 * FRAME_LINE_HEIGHT (f))
     {
-      mac_invert_rectangle (f, flash_left,
-			    (FRAME_INTERNAL_BORDER_WIDTH (f)
-			     + FRAME_TOOL_BAR_LINES (f) * FRAME_LINE_HEIGHT (f)),
-			    width, flash_height);
-      mac_invert_rectangle (f, flash_left,
-			    (height - flash_height
-			     - FRAME_INTERNAL_BORDER_WIDTH (f)),
-			    width, flash_height);
+      /* If window is tall, flash top and bottom line.  */
+      rects[0].left = rects[1].left = flash_left;
+      rects[0].top = (FRAME_INTERNAL_BORDER_WIDTH (f)
+		      + FRAME_TOOL_BAR_LINES (f) * FRAME_LINE_HEIGHT (f));
+      rects[0].right = rects[1].right = flash_left + width;
+      rects[0].bottom = rects[0].top + flash_height;
+      rects[1].top = height - flash_height - FRAME_INTERNAL_BORDER_WIDTH (f);
+      rects[1].bottom = rects[1].top + flash_height;
+      nrects = 2;
     }
   else
-    /* If it is short, flash it all.  */
-    mac_invert_rectangle (f, flash_left, FRAME_INTERNAL_BORDER_WIDTH (f),
-			  width, height - 2 * FRAME_INTERNAL_BORDER_WIDTH (f));
+    {
+      /* If it is short, flash it all.  */
+      rects[0].left = flash_left;
+      rects[0].top = FRAME_INTERNAL_BORDER_WIDTH (f);
+      rects[0].right = rects[0].left + width;
+      rects[0].bottom = rects[0].top + (height
+					- 2 * FRAME_INTERNAL_BORDER_WIDTH (f));
+      nrects = 1;
+    }
+
+  BLOCK_INPUT;
+
+  mac_invert_rectangles (f, rects, nrects);
 
   x_flush (f);
 
@@ -4264,22 +4309,7 @@ XTflash (f)
       }
   }
 
-  /* If window is tall, flash top and bottom line.  */
-  if (height > 3 * FRAME_LINE_HEIGHT (f))
-    {
-      mac_invert_rectangle (f, flash_left,
-			    (FRAME_INTERNAL_BORDER_WIDTH (f)
-			     + FRAME_TOOL_BAR_LINES (f) * FRAME_LINE_HEIGHT (f)),
-			    width, flash_height);
-      mac_invert_rectangle (f, flash_left,
-			    (height - flash_height
-			     - FRAME_INTERNAL_BORDER_WIDTH (f)),
-			    width, flash_height);
-    }
-  else
-    /* If it is short, flash it all.  */
-    mac_invert_rectangle (f, flash_left, FRAME_INTERNAL_BORDER_WIDTH (f),
-			  width, height - 2 * FRAME_INTERNAL_BORDER_WIDTH (f));
+  mac_invert_rectangles (f, rects, nrects);
 
   x_flush (f);
 
@@ -8581,7 +8611,8 @@ mac_mapped_modifiers (modifiers, key_code)
      if that key can be entered without the `fn' key on laptops.  */
   if (modifiers & kEventKeyModifierFnMask
       && key_code <= 0x7f
-      && fn_keycode_to_keycode_table[key_code] == key_code)
+      && fn_keycode_to_keycode_table[key_code] == key_code
+      && key_code != 0)		/* kVK_ANSI_A */
     modifiers &= ~kEventKeyModifierFnMask;
 #endif
 

@@ -245,14 +245,43 @@ OPTION-TYPE is a symbol specifying the type of startup options:
 
 (defun mac-handle-args (args)
   "Process the Mac-related command line options in ARGS.
-It records Mac-specific options (currently -psn_HIGH_LOW added by
-Launch Services) in `mac-startup-options' as a value for the key
-symbol `command-line' and forwards the remaining ones to
-`x-handle-args'."
-  (when (and (cadr args) (string-match "\\`-psn_" (cadr args)))
-    (push (cons 'command-line (list (cadr args))) mac-startup-options)
-    (setq args (cons (car args) (cddr args))))
-  (x-handle-args args))
+It records Mac-specific options in `mac-startup-options' as a
+value for the key symbol `command-line' after processing the
+standard ones in `x-handle-args'."
+  (setq args (x-handle-args args))
+  (if (not (string-match "AppKit" mac-carbon-version-string))
+      (progn
+	(when (and (cadr args) (string-match "\\`-psn_" (cadr args)))
+	  (push (cons 'command-line (list (cadr args))) mac-startup-options)
+	  (setq args (cons (car args) (cddr args))))
+	args)
+    (let ((invocation-args args)
+	  mac-specific-args)
+      (setq args nil)
+      (while (and invocation-args
+		  (not (equal (car invocation-args) "--")))
+	(let ((this-switch (car invocation-args))
+	      case-fold-search)
+	  (setq invocation-args (cdr invocation-args))
+	  (cond ((string-match "\\`-psn_" this-switch)
+		 (push this-switch mac-specific-args))
+		;; Cocoa applications let you set temporary
+		;; preferences on the command line.  We regard option
+		;; names starting with a capital letter and containing
+		;; at least 2 letters as such preference settings.
+		((and (string-match "\\`-[A-Z]." this-switch)
+		      invocation-args
+		      (not (string-match "\\`-" (car invocation-args))))
+		 (setq mac-specific-args
+		       (cons (car invocation-args)
+			     (cons this-switch mac-specific-args)))
+		 (setq invocation-args (cdr invocation-args)))
+		(t
+		 (setq args (cons this-switch args))))))
+      (when mac-specific-args
+	(setq mac-specific-args (nreverse mac-specific-args))
+	(push (cons 'command-line mac-specific-args) mac-startup-options))
+      (nconc (nreverse args) invocation-args))))
 
 
 ;;
@@ -1357,9 +1386,7 @@ correspoinding TextEncodingBase value."
       data)))
 
 (defun mac-TIFF-to-string (data &optional text)
-  (prog1 (or text (setq text (copy-sequence " ")))
-    (put-text-property 0 (length text) 'display (create-image data 'tiff t)
-		       text)))
+  (propertize (or text " ") 'display (create-image data 'tiff t)))
 
 (defun mac-pasteboard-string-to-string (data &optional coding-system)
   (or coding-system (setq coding-system mac-system-coding-system))
@@ -1503,7 +1530,9 @@ in `selection-converter-alist', which see."
     (when tiff-image
       (remove-text-properties 0 (length tiff-image)
 			      '(foreign-selection nil) tiff-image)
-      (setq text (mac-TIFF-to-string tiff-image text)))
+      (if text
+	  (setq text (list text (mac-TIFF-to-string tiff-image text)))
+	(setq text (mac-TIFF-to-string tiff-image))))
     text))
 
 ;;; Return the value of the current selection.
@@ -1512,21 +1541,21 @@ in `selection-converter-alist', which see."
 ;;; it returns nil the second time.  This is so that a single
 ;;; selection won't be added to the kill ring over and over.
 (defun x-get-selection-value ()
-  (let (clip-text primary-text)
+  (let (clip-text primary-text selection-value)
     (if (not x-select-enable-clipboard)
 	(setq x-last-selected-text-clipboard nil)
       (setq clip-text (x-selection-value 'CLIPBOARD))
-      (if (string= clip-text "") (setq clip-text nil))
+      (if (equal clip-text "") (setq clip-text nil))
 
       ;; Check the CLIPBOARD selection for 'newness', is it different
       ;; from what we remebered them to be last time we did a
       ;; cut/paste operation.
       (setq clip-text
 	    (cond;; check clipboard
-	     ((or (not clip-text) (string= clip-text ""))
+	     ((or (not clip-text) (equal clip-text ""))
 	      (setq x-last-selected-text-clipboard nil))
 	     ((eq      clip-text x-last-selected-text-clipboard) nil)
-	     ((string= clip-text x-last-selected-text-clipboard)
+	     ((equal clip-text x-last-selected-text-clipboard)
 	      ;; Record the newer string,
 	      ;; so subsequent calls can use the `eq' test.
 	      (setq x-last-selected-text-clipboard clip-text)
@@ -1541,10 +1570,10 @@ in `selection-converter-alist', which see."
     ;; cut/paste operation.
     (setq primary-text
 	  (cond;; check primary selection
-	   ((or (not primary-text) (string= primary-text ""))
+	   ((or (not primary-text) (equal primary-text ""))
 	    (setq x-last-selected-text-primary nil))
 	   ((eq      primary-text x-last-selected-text-primary) nil)
-	   ((string= primary-text x-last-selected-text-primary)
+	   ((equal primary-text x-last-selected-text-primary)
 	    ;; Record the newer string,
 	    ;; so subsequent calls can use the `eq' test.
 	    (setq x-last-selected-text-primary primary-text)
@@ -1559,8 +1588,13 @@ in `selection-converter-alist', which see."
     ;; selection from clipboard (if we are supposed to) and primary,
     ;; So return the first one that has changed (which is the first
     ;; non-null one).
-    (or clip-text primary-text)
-    ))
+    (setq selection-value (or clip-text primary-text))
+    ;; If the selection-value contains multiple items, we need to
+    ;; protect the saved x-last-selected-text-clipboard/primary from
+    ;; caller's nreverse.
+    (if (listp selection-value)
+	(setq selection-value (copy-sequence selection-value)))
+    selection-value))
 
 (put 'CLIPBOARD 'mac-scrap-name "com.apple.scrap.clipboard")
 (when (eq system-type 'darwin)
@@ -2268,6 +2302,7 @@ either in the current buffer or in the echo area."
   (let* ((ae (mac-event-ae event))
 	 (text (cdr (mac-ae-parameter ae)))
 	 (selected-range (cdr (mac-ae-parameter ae "selectedRange")))
+	 (replacement-range (cdr (mac-ae-parameter ae "replacementRange")))
 	 (script-language (mac-ae-script-language ae "tssl"))
 	 (coding (and script-language
 		      (or (cdr (assq (car script-language)
@@ -2334,12 +2369,21 @@ either in the current buffer or in the echo area."
 			(point))
 		      (current-buffer))
 	(overlay-put mac-ts-active-input-overlay 'before-string
-		     active-input-string)))))
+		     active-input-string)
+	(if replacement-range
+	    (condition-case nil
+		;; Strictly speaking, the replacement range can be out
+		;; of sync.
+		(delete-region (+ (point-min) (car replacement-range))
+			       (+ (point-min) (car replacement-range)
+				  (cdr replacement-range)))
+	      (error nil)))))))
 
 (defun mac-text-input-insert-text (event)
   (interactive "e")
   (let* ((ae (mac-event-ae event))
 	 (text (cdr (mac-ae-parameter ae)))
+	 (replacement-range (cdr (mac-ae-parameter ae "replacementRange")))
 	 (script-language (mac-ae-script-language ae "tssl"))
 	 (coding (and script-language
 		      (or (cdr (assq (car script-language)
@@ -2361,6 +2405,14 @@ either in the current buffer or in the echo area."
 				      '(mac-ts-active-input-string nil)
 				      msg)
 	      (message "%s" msg))))))
+    (if replacement-range
+	(condition-case nil
+	    ;; Strictly speaking, the replacement range can be out of
+	    ;; sync.
+	    (delete-region (+ (point-min) (car replacement-range))
+			   (+ (point-min) (car replacement-range)
+			      (cdr replacement-range)))
+	  (error nil)))
     (mac-unread-string (mac-utxt-to-string text coding))))
 
 (define-key mac-apple-event-map [text-input set-marked-text]
@@ -2521,7 +2573,8 @@ See also `mac-dnd-known-types'."
   :group 'mac)
 
 (defun mac-dnd-handle-furl (window action data)
-  (dnd-handle-one-url window action (mac-furl-to-string data)))
+  (dnd-handle-one-url window action
+		      (dnd-get-local-file-uri (mac-furl-to-string data))))
 
 (defun mac-dnd-handle-hfs (window action data)
 ;; struct HFSFlavor {
@@ -2539,7 +2592,7 @@ See also `mac-dnd-known-types'."
 
 (defun mac-dnd-handle-pasteboard-filenames (window action data)
   (dolist (file-url (mac-pasteboard-filenames-to-file-urls data))
-    (dnd-handle-one-url window action file-url)))
+    (dnd-handle-one-url window action (dnd-get-local-file-uri file-url))))
 
 (defun mac-dnd-insert-utxt (window action data)
   (dnd-insert-text window action (mac-utxt-to-string data)))
@@ -3053,8 +3106,12 @@ ascii:-*-Monaco-*-*-*-*-12-*-*-*-*-*-mac-roman")
 ;; If Emacs is invoked from the command line, the initial frame
 ;; doesn't get focused.
 (add-hook 'after-init-hook
-	  (lambda () (if (and (null (cdr (assq 'command-line
-					       mac-startup-options)))
+	  (lambda () (if (and (let ((first-option
+				     (cadr (assq 'command-line
+						 mac-startup-options))))
+				(not (and first-option
+					  (string-match "\\`-psn_"
+							first-option))))
 			      (eq (frame-visible-p (selected-frame)) t))
 			 (x-focus-frame (selected-frame)))))
 
