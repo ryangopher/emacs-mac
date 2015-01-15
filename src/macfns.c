@@ -1786,13 +1786,15 @@ void
 x_set_scroll_bar_default_width (f)
      struct frame *f;
 {
-  /* Imitate X without X Toolkit */
+  int width, wid = FRAME_COLUMN_WIDTH (f);
 
-  int wid = FRAME_COLUMN_WIDTH (f);
+  BLOCK_INPUT;
+  width = (mac_get_default_scroll_bar_width (f)
+	   + 2 * VERTICAL_SCROLL_BAR_WIDTH_TRIM);
+  UNBLOCK_INPUT;
 
-  FRAME_CONFIG_SCROLL_BAR_WIDTH (f) = MAC_AQUA_VERTICAL_SCROLL_BAR_WIDTH;
-  FRAME_CONFIG_SCROLL_BAR_COLS (f) = (FRAME_CONFIG_SCROLL_BAR_WIDTH (f) +
-				      wid - 1) / wid;
+  FRAME_CONFIG_SCROLL_BAR_COLS (f) = (width + wid - 1) / wid;
+  FRAME_CONFIG_SCROLL_BAR_WIDTH (f) = width;
 }
 
 static void

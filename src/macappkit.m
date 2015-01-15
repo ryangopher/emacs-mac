@@ -353,11 +353,12 @@ NSSizeToCGSize (nssize)
 
 /* Create an image object from a Quartz 2D image.  */
 
-+ (id)imageWithCGImage:(CGImageRef)cgImage
++ (id)imageWithCGImage:(CGImageRef)cgImage exclusive:(BOOL)flag
 {
   NSImage *image;
 
-  if ([self instancesRespondToSelector:@selector(initWithCGImage:size:)])
+  if (flag
+      && [self instancesRespondToSelector:@selector(initWithCGImage:size:)])
     image = [[self alloc] initWithCGImage:cgImage size:NSZeroSize];
   else if ([NSBitmapImageRep
 	     instancesRespondToSelector:@selector(initWithCGImage:)])
@@ -2205,6 +2206,7 @@ extern void mac_save_keyboard_input_source P_ ((void));
   [window setDelegate:self];
   [window useOptimizedDrawing:YES];
   [[window contentView] addSubview:emacsView];
+  [self updateBackingScaleFactor];
 
   if (oldWindow)
     {
@@ -2644,6 +2646,23 @@ extern void mac_save_keyboard_input_source P_ ((void));
   [emacsController updatePresentationOptions];
 }
 
+- (void)updateBackingScaleFactor
+{
+  struct frame *f = emacsFrame;
+  NSWindow *window = (__bridge id) FRAME_MAC_WINDOW (f);
+  int backingScaleFactor;
+
+  if ([window respondsToSelector:@selector(backingScaleFactor)])
+    backingScaleFactor = [window backingScaleFactor];
+  else if ([window respondsToSelector:@selector(userSpaceScaleFactor)]
+      && [window userSpaceScaleFactor] > 1)
+    backingScaleFactor = 2;
+  else
+    backingScaleFactor = 1;
+
+  FRAME_BACKING_SCALE_FACTOR (f) = backingScaleFactor;
+}
+
 - (BOOL)emacsViewCanDraw
 {
   return [emacsView canDraw];
@@ -2797,6 +2816,11 @@ extern void mac_save_keyboard_input_source P_ ((void));
 
   if ([window isKeyWindow])
     [emacsController updatePresentationOptions];
+}
+
+- (void)windowDidChangeBackingProperties:(NSNotification *)notification
+{
+  [self updateBackingScaleFactor];
 }
 
 - (BOOL)windowShouldClose:(id)sender
@@ -3728,10 +3752,29 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
   struct frame *f = [self emacsFrame];
   int x = NSMinX (aRect), y = NSMinY (aRect);
   int width = NSWidth (aRect), height = NSHeight (aRect);
+#if USE_MAC_IMAGE_IO
+  BOOL detect_scale_mismatch_p =
+    ([NSWindow instancesRespondToSelector:@selector(backingScaleFactor)]
+     && !FRAME_TOOLTIP_P (f));
+#endif
 
   set_global_focus_view_frame (f);
   mac_clear_area (f, x, y, width, height);
+#if USE_MAC_IMAGE_IO
+  if (detect_scale_mismatch_p)
+    mac_scale_mismatch_detection = (FRAME_BACKING_SCALE_FACTOR (f) == 1
+				    ? SCALE_MISMATCH_DETECT_NOT_1X
+				    : SCALE_MISMATCH_DETECT_NOT_2X);
+#endif
   expose_frame (f, x, y, width, height);
+#if USE_MAC_IMAGE_IO
+  if (detect_scale_mismatch_p)
+    {
+      if (mac_scale_mismatch_detection == SCALE_MISMATCH_DETECTED)
+	SET_FRAME_GARBAGED (f);
+      mac_scale_mismatch_detection = SCALE_MISMATCH_DONT_DETECT;
+    }
+#endif
   unset_global_focus_view_frame ();
 }
 
@@ -4022,6 +4065,12 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
       deltaX = [theEvent rotation];
       break;
 
+#if __LP64__
+    case NSEventTypeSmartMagnify:
+      type = NSEventTypeGesture;
+      break;
+#endif
+
     default:
       abort ();
     }
@@ -4099,6 +4148,11 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
 }
 
 - (void)rotateWithEvent:(NSEvent *)event
+{
+  [self scrollWheel:event];
+}
+
+- (void)smartMagnifyWithEvent:(NSEvent *)event
 {
   [self scrollWheel:event];
 }
@@ -5466,27 +5520,29 @@ static BOOL NonmodalScrollerPagingBehavior;
   BOOL enabled = [self isEnabled], tooSmall = NO;
   float floatValue = [self floatValue];
   CGFloat knobProportion = [self knobProportion];
-  NSRect bounds, KnobRect;
+  const NSControlSize controlSizes[] =
+    {NSRegularControlSize, NSSmallControlSize}; /* Descending */
+  int i, count = sizeof (controlSizes) / sizeof (controlSizes[0]);
+  NSRect KnobRect, bounds = [self bounds];
+  CGFloat shorterDimension = min (NSWidth (bounds), NSHeight (bounds));
 
-  bounds = [self bounds];
-  if (NSHeight (bounds) >= NSWidth (bounds))
+  for (i = 0; i < count; i++)
     {
-      if (NSWidth (bounds) >= MAC_AQUA_VERTICAL_SCROLL_BAR_WIDTH)
-	[self setControlSize:NSRegularControlSize];
-      else if (NSWidth (bounds) >= MAC_AQUA_SMALL_VERTICAL_SCROLL_BAR_WIDTH)
-	[self setControlSize:NSSmallControlSize];
-      else
-	tooSmall = YES;
+      CGFloat width = [[self class]
+			scrollerWidthForControlSize:controlSizes[i]
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1070
+				      scrollerStyle:NSScrollerStyleLegacy
+#endif
+		       ];
+
+      if (shorterDimension >= width)
+	{
+	  [self setControlSize:controlSizes[i]];
+	  break;
+	}
     }
-  else
-    {
-      if (NSHeight (bounds) >= MAC_AQUA_VERTICAL_SCROLL_BAR_WIDTH)
-	[self setControlSize:NSRegularControlSize];
-      else if (NSHeight (bounds) >= MAC_AQUA_SMALL_VERTICAL_SCROLL_BAR_WIDTH)
-	[self setControlSize:NSSmallControlSize];
-      else
-	tooSmall = YES;
-    }
+  if (i == count)
+    tooSmall = YES;
 
 #if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
   [self setDoubleValue:0];
@@ -5877,6 +5933,17 @@ x_set_toolkit_scroll_bar_thumb (bar, portion, position, whole)
   UNBLOCK_INPUT;
 }
 
+int
+mac_get_default_scroll_bar_width (f)
+     struct frame *f;
+{
+  return [EmacsScroller scrollerWidthForControlSize:NSRegularControlSize
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1070
+				      scrollerStyle:NSScrollerStyleLegacy
+#endif
+	  ];
+}
+
 
 /***********************************************************************
 			       Tool-bars
@@ -5893,8 +5960,6 @@ extern void mac_move_window_to_gravity_reference_point P_ ((struct frame *,
 							    int, short, short));
 extern void mac_get_window_gravity_reference_point P_ ((struct frame *, int,
 							short *, short *));
-extern CGImageRef mac_image_spec_to_cg_image P_ ((struct frame *,
-						  Lisp_Object));
 
 @implementation EmacsToolbarItem
 
@@ -5903,31 +5968,52 @@ extern CGImageRef mac_image_spec_to_cg_image P_ ((struct frame *,
   return YES;
 }
 
+#if !USE_ARC
 - (void)dealloc
 {
-  CGImageRelease (coreGraphicsImage);
-#if !USE_ARC
+  [coreGraphicsImages dealloc];
   [super dealloc];
-#endif
 }
+#endif
 
 /* Set the toolbar icon image to the CoreGraphics image CGIMAGE.  */
 
 - (void)setCoreGraphicsImage:(CGImageRef)cgImage
 {
-  if (coreGraphicsImage == cgImage)
+  [self setCoreGraphicsImages:[NSArray arrayWithObject:((__bridge id)
+							cgImage)]];
+}
+
+- (void)setCoreGraphicsImages:(NSArray *)cgImages
+{
+  NSUInteger i, count;
+  NSImage *image;
+
+  if ([coreGraphicsImages isEqualToArray:cgImages])
     return;
 
-  [self setImage:[NSImage imageWithCGImage:cgImage]];
-  CGImageRelease (coreGraphicsImage);
-  coreGraphicsImage = CGImageRetain (cgImage);
+  count = [cgImages count];
+  image = [NSImage imageWithCGImage:((__bridge CGImageRef)
+				     [cgImages objectAtIndex:0])
+			  exclusive:(count == 1)];
+  for (i = 1; i < count; i++)
+    {
+      NSArray *reps = [[NSImage imageWithCGImage:((__bridge CGImageRef)
+						  [cgImages objectAtIndex:i])
+				       exclusive:NO] representations];
+
+      [image addRepresentation:[reps objectAtIndex:0]];
+    }
+
+  [self setImage:image];
+  coreGraphicsImages = [cgImages copy];
 }
 
 - (void)setImage:(NSImage *)image
 {
   [super setImage:image];
-  CGImageRelease (coreGraphicsImage);
-  coreGraphicsImage = nil;
+  MRC_RELEASE (coreGraphicsImages);
+  coreGraphicsImages = nil;
 }
 
 @end				// EmacsToolbarItem
@@ -6096,16 +6182,23 @@ update_frame_tool_bar (f)
      FRAME_PTR f;
 {
   NSWindow *window = (__bridge id) FRAME_MAC_WINDOW (f);
+  EmacsFrameController *frameController = [window delegate];
   short rx, ry;
   NSToolbar *toolbar;
   NSArray *items;
   NSUInteger count;
   int i, pos, win_gravity = f->output_data.mac->toolbar_win_gravity;
+  int use_multiimage_icons_p;
 
   BLOCK_INPUT;
 
   if (win_gravity >= NorthWestGravity && win_gravity <= SouthEastGravity)
     mac_get_window_gravity_reference_point (f, win_gravity, &rx, &ry);
+
+  use_multiimage_icons_p =
+    ([window respondsToSelector:@selector(backingScaleFactor)]
+     || ([window respondsToSelector:@selector(userSpaceScaleFactor)]
+	 && [window userSpaceScaleFactor] > 1));
 
   toolbar = [window toolbar];
   items = [toolbar items];
@@ -6117,8 +6210,9 @@ update_frame_tool_bar (f)
       int enabled_p = !NILP (PROP (TOOL_BAR_ITEM_ENABLED_P));
       int selected_p = !NILP (PROP (TOOL_BAR_ITEM_SELECTED_P));
       int idx;
+      ptrdiff_t img_id;
+      struct image *img;
       Lisp_Object image;
-      CGImageRef cg_image;
       NSString *label, *identifier = TOOLBAR_ICON_ITEM_IDENTIFIER;
 
       /* If image is a vector, choose the image according to the
@@ -6141,9 +6235,23 @@ update_frame_tool_bar (f)
       else
 	idx = -1;
 
-      cg_image = mac_image_spec_to_cg_image (f, image);
       /* Ignore invalid image specifications.  */
-      if (cg_image == NULL)
+      if (!valid_image_p (image))
+	continue;
+
+#if USE_MAC_IMAGE_IO
+      if (use_multiimage_icons_p)
+	FRAME_BACKING_SCALE_FACTOR (f) = 1;
+#endif
+      img_id = lookup_image (f, image);
+#if USE_MAC_IMAGE_IO
+      if (use_multiimage_icons_p)
+	[frameController updateBackingScaleFactor];
+#endif
+      img = IMAGE_FROM_ID (f, img_id);
+      prepare_image_for_display (f, img);
+
+      if (img->data.ptr_val == NULL)
 	continue;
 
       label = [NSString stringWithLispString:(PROP (TOOL_BAR_ITEM_CAPTION))];
@@ -6153,7 +6261,7 @@ update_frame_tool_bar (f)
       /* As displayed images of toolbar image items are scaled to
 	 square shapes, narrow images such as separators look weird.
 	 So we use separator items for too narrow disabled images.  */
-      if (CGImageGetWidth (cg_image) <= 2 && !enabled_p)
+      if (CGImageGetWidth (img->data.ptr_val) <= 2 && !enabled_p)
 	identifier = NSToolbarSeparatorItemIdentifier;
 
       if (pos >= count
@@ -6178,7 +6286,28 @@ update_frame_tool_bar (f)
 	{
 	  EmacsToolbarItem *item = [items objectAtIndex:pos];
 
-	  [item setCoreGraphicsImage:cg_image];
+#if USE_MAC_IMAGE_IO
+	  if (!use_multiimage_icons_p || img->target_backing_scale == 0)
+#endif
+	    [item setCoreGraphicsImage:img->data.ptr_val];
+#if USE_MAC_IMAGE_IO
+	  else
+	    {
+	      CGImageRef cg_image = img->data.ptr_val;
+	      NSArray *cgImages;
+
+	      FRAME_BACKING_SCALE_FACTOR (f) = 2;
+	      img_id = lookup_image (f, image);
+	      [frameController updateBackingScaleFactor];
+	      img = IMAGE_FROM_ID (f, img_id);
+	      prepare_image_for_display (f, img);
+
+	      /* It's OK for img->data.ptr_val to become NULL here.  */
+	      cgImages = [NSArray arrayWithObjects:((__bridge id) cg_image),
+				  ((__bridge id) img->data.ptr_val), nil];
+	      [item setCoreGraphicsImages:cgImages];
+	    }
+#endif
 	  [item setLabel:label];
 	  [item setEnabled:(enabled_p || idx >= 0)];
 	  [item setTag:i];
@@ -8825,9 +8954,7 @@ static NSMutableSet *registered_apple_event_specs;
   err = [replyEvent copyDescTo:&reply];
   if (err == noErr)
     {
-      const AEDesc *event_ptr = NULL;
-
-      event_ptr = [event aeDesc];
+      const AEDesc *event_ptr = [event aeDesc];
 
       if (event_ptr)
 	err = mac_handle_apple_event (event_ptr, &reply, 0);
@@ -9537,14 +9664,17 @@ mac_appkit_do_applescript (script, result)
 @implementation NSView (Emacs)
 
 - (XImagePtr)createXImageFromRect:(NSRect)rect backgroundColor:(NSColor *)color
+		      scaleFactor:(CGFloat)scaleFactor
 {
   XImagePtr ximg;
   CGContextRef context;
   NSGraphicsContext *gcontext;
+  NSAffineTransform *transform;
 
   /* The first arg `display' and the second `w' are dummy in the case
      of USE_MAC_IMAGE_IO.  */
-  ximg = XCreatePixmap (NULL, NULL, NSWidth (rect), NSHeight (rect), 0);
+  ximg = XCreatePixmap (NULL, NULL, NSWidth (rect) * scaleFactor,
+			NSHeight (rect) * scaleFactor, 0);
   context = CGBitmapContextCreate (ximg->data, ximg->width, ximg->height, 8,
 				   ximg->bytes_per_line,
 				   mac_cg_color_space_rgb,
@@ -9558,16 +9688,15 @@ mac_appkit_do_applescript (script, result)
     }
   gcontext = [NSGraphicsContext graphicsContextWithGraphicsPort:context
 							flipped:NO];
+  transform = [NSAffineTransform transform];
+  [transform scaleBy:scaleFactor];
+  [transform translateXBy:(- NSMinX (rect)) yBy:(- NSMinY (rect))];
   if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5))
     {
-      NSAffineTransform *transform;
-
       [NSGraphicsContext saveGraphicsState];
       [NSGraphicsContext setCurrentContext:gcontext];
-      transform = [NSAffineTransform transform];
-      [transform translateXBy:(- NSMinX (rect)) yBy:(- NSMinY (rect))];
       [transform concat];
-      if (![self isOpaque])
+      if (!([self isOpaque] && NSContainsRect (rect, [self bounds])))
 	{
 	  [NSGraphicsContext saveGraphicsState];
 	  [(color ? color : [NSColor clearColor]) set];
@@ -9582,12 +9711,17 @@ mac_appkit_do_applescript (script, result)
     }
   else
     {
+      NSRect bounds = [self bounds];
+      NSRect contentRect = NSMakeRect (bounds.origin.x, bounds.origin.y,
+				       bounds.size.width * scaleFactor,
+				       bounds.size.height * scaleFactor);
       NSWindow *window =
-	[[NSWindow alloc] initWithContentRect:rect
+	[[NSWindow alloc] initWithContentRect:contentRect
 				    styleMask:(NSBorderlessWindowMask
 					       | NSUnscaledWindowMask)
 				      backing:NSBackingStoreBuffered
 					defer:NO];
+      NSView *contentView = [window contentView];
       NSBitmapImageRep *rep;
 
       if (![self isOpaque])
@@ -9601,16 +9735,28 @@ mac_appkit_do_applescript (script, result)
 					  : [NSColor clearColor])];
 	    }
 	}
-      [window setContentView:self];
+      [contentView addSubview:self];
+      [contentView setBoundsSize:bounds.size];
       [self display];
       [self lockFocus];
       rep = [[NSBitmapImageRep alloc]
-	      initWithFocusedViewRect:[self convertRect:rect toView:nil]];
+	      initWithFocusedViewRect:[self convertRect:bounds toView:nil]];
       [self unlockFocus];
       MRC_RELEASE (window);
 
       [NSGraphicsContext saveGraphicsState];
       [NSGraphicsContext setCurrentContext:gcontext];
+      [transform concat];
+      if (!([self isOpaque] && NSContainsRect (rect, bounds)))
+	{
+	  [NSGraphicsContext saveGraphicsState];
+	  [(color ? color : [NSColor clearColor]) set];
+	  NSRectFill (rect);
+	  [NSGraphicsContext restoreGraphicsState];
+	}
+      transform = [NSAffineTransform transform];
+      [transform scaleBy:(1 / scaleFactor)];
+      [transform concat];
       [rep draw];
       MRC_RELEASE (rep);
       [NSGraphicsContext restoreGraphicsState];
@@ -9647,16 +9793,19 @@ mac_appkit_do_applescript (script, result)
     {
       NSRect frameRect;
       WebView *webView;
-      NSNumber *widthNum, *heightNum;
+      WebFrame *mainFrame;
       int width, height;
+      CGFloat scaleFactor;
 
       frameRect = NSMakeRect (0, 0, 100, 100); /* Adjusted later.  */
       webView = [[WebView alloc] initWithFrame:frameRect
 				     frameName:nil groupName:nil];
+      mainFrame = [webView mainFrame];
+      [[mainFrame frameView] setAllowsScrolling:NO];
       [webView setValue:backgroundColor forKey:@"backgroundColor"];
       [webView setFrameLoadDelegate:self];
-      [[webView mainFrame] loadData:data MIMEType:@"image/svg+xml"
-		   textEncodingName:nil baseURL:nil];
+      [mainFrame loadData:data MIMEType:@"image/svg+xml" textEncodingName:nil
+		  baseURL:nil];
 
       /* [webView isLoading] is not sufficient if we have <image
 	 xlink:href=... /> */
@@ -9665,28 +9814,73 @@ mac_appkit_do_applescript (script, result)
 
       @try
 	{
-	  widthNum = [webView valueForKeyPath:@"mainFrame.DOMDocument.rootElement.width.baseVal.value"];
-	  heightNum = [webView valueForKeyPath:@"mainFrame.DOMDocument.rootElement.height.baseVal.value"];
+	  DOMSVGRect *boundingBox =
+	    [mainFrame valueForKeyPath:@"DOMDocument.rootElement.BBox"];
+	  id val;
+	  NSNumber *unitType, *num;
+	  enum {
+	    SVG_LENGTHTYPE_PERCENTAGE = 2
+	  };
+
+	  val = [mainFrame
+		  valueForKeyPath:@"DOMDocument.rootElement.width.baseVal"];
+	  unitType = [val valueForKey:@"unitType"];
+	  if ([unitType intValue] == SVG_LENGTHTYPE_PERCENTAGE)
+	    {
+	      frameRect.size.width =
+		roundf ([boundingBox x] + [boundingBox width]);
+	      num = [val valueForKey:@"valueInSpecifiedUnits"];
+	      width = lround (frameRect.size.width * [num doubleValue] / 100);
+	    }
+	  else
+	    {
+	      num = [val valueForKey:@"value"];
+	      width = lround ([num doubleValue]);
+	      frameRect.size.width = width;
+	    }
+
+	  val = [mainFrame
+		  valueForKeyPath:@"DOMDocument.rootElement.height.baseVal"];
+	  unitType = [val valueForKey:@"unitType"];
+	  if ([unitType intValue] == SVG_LENGTHTYPE_PERCENTAGE)
+	    {
+	      frameRect.size.height =
+		roundf ([boundingBox y] + [boundingBox height]);
+	      num = [val valueForKey:@"valueInSpecifiedUnits"];
+	      height = lround (frameRect.size.height * [num doubleValue] / 100);
+	    }
+	  else
+	    {
+	      num = [val valueForKey:@"value"];
+	      height = lround ([num doubleValue]);
+	      frameRect.size.height = height;
+	    }
 	}
       @catch (NSException *exception)
-	{
-	  widthNum = nil;
-	  heightNum = nil;
-	}
-
-      if ([widthNum isKindOfClass:[NSNumber class]]
-	  && [heightNum isKindOfClass:[NSNumber class]])
-	{
-	  width = [widthNum intValue];
-	  height = [heightNum intValue];
-	}
-      else
 	{
 	  MRC_RELEASE (webView);
 	  (*imageErrorFunc) ("Error reading SVG image `%s'",
 			     emacsImage->spec, Qnil);
 
 	  return 0;
+	}
+
+      [webView setFrame:frameRect];
+      frameRect.size.width = width;
+      frameRect.origin.y = NSHeight (frameRect) - height;
+      frameRect.size.height = height;
+
+      scaleFactor = 1;
+      if (emacsImage->target_backing_scale == 0)
+	{
+	  emacsImage->target_backing_scale =
+	    FRAME_BACKING_SCALE_FACTOR (emacsFrame);
+	  if (emacsImage->target_backing_scale == 2)
+	    {
+	      width *= 2;
+	      height *= 2;
+	      scaleFactor = 2;
+	    }
 	}
 
       if (!(*checkImageSizeFunc) (emacsFrame, width, height))
@@ -9698,13 +9892,11 @@ mac_appkit_do_applescript (script, result)
 	  return 0;
 	}
 
-      frameRect.size.width = width;
-      frameRect.size.height = height;
       emacsImage->width = width;
       emacsImage->height = height;
-      [webView setFrame:frameRect];
       emacsImage->pixmap = [webView createXImageFromRect:frameRect
-					 backgroundColor:nil];
+					 backgroundColor:backgroundColor
+					     scaleFactor:scaleFactor];
       MRC_RELEASE (webView);
 
       return 1;
@@ -10468,14 +10660,18 @@ extern Lisp_Object Qpage_curl, Qpage_curl_with_shadow, Qripple, Qswipe;
 - (void)setupLayerHostingView
 {
   CALayer *rootLayer = [CA_LAYER layer];
-  CGFloat scaleFactor = [overlayWindow userSpaceScaleFactor];
 
   layerHostingView = [[NSView alloc] initWithFrame:[overlayView frame]];
   [layerHostingView setAutoresizingMask:(NSViewWidthSizable
 					 | NSViewHeightSizable)];
   rootLayer.anchorPoint = CGPointZero;
-  rootLayer.sublayerTransform =
-    CATransform3DMakeScale (scaleFactor, scaleFactor, 1.0);
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_6)
+    {
+      CGFloat scaleFactor = [overlayWindow userSpaceScaleFactor];
+
+      rootLayer.sublayerTransform =
+	CATransform3DMakeScale (scaleFactor, scaleFactor, 1.0);
+    }
   [layerHostingView setLayer:rootLayer];
   [layerHostingView setWantsLayer:YES];
 
@@ -10682,8 +10878,13 @@ get_symbol_from_filter_input_key (key)
 
 - (void)adjustTransitionFilter:(CIFilter *)filter forLayer:(CALayer *)layer
 {
-  CGFloat scaleFactor = [overlayWindow userSpaceScaleFactor];
   NSDictionary *attributes = [filter attributes];
+  CGFloat scaleFactor;
+
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_6)
+    scaleFactor = [overlayWindow userSpaceScaleFactor];
+  else
+    scaleFactor = 1.0;
 
   if ([[[attributes objectForKey:kCIInputCenterKey]
 	 objectForKey:kCIAttributeType]
@@ -10694,6 +10895,23 @@ get_symbol_from_filter_input_key (key)
       [filter setValue:[CIVector vectorWithX:(center.x * scaleFactor)
 					   Y:(center.y * scaleFactor)]
 		forKey:kCIInputCenterKey];
+    }
+
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5
+      && [[[attributes objectForKey:kCIInputExtentKey]
+	    objectForKey:kCIAttributeType]
+	   isEqualToString:kCIAttributeTypeRectangle])
+    {
+      CGRect frame = layer.frame;
+#undef Z
+      CIVector *extent =
+	[CIVector vectorWithX:(CGRectGetMinX (frame) * scaleFactor)
+			    Y:(CGRectGetMinY (frame) * scaleFactor)
+			    Z:(CGRectGetWidth (frame) * scaleFactor)
+			    W:(CGRectGetHeight (frame) * scaleFactor)];
+#define Z (current_buffer->text->z)
+
+      [filter setValue:extent forKey:kCIInputExtentKey];
     }
 
   if ([[attributes objectForKey:kCIAttributeFilterName]
@@ -10724,15 +10942,7 @@ get_symbol_from_filter_input_key (key)
 	     causes crash when drawing on Mac OS X 10.5.  */
 	  NSBitmapImageRep *bitmap = [contentLayer
 				       valueForKey:@"bitmapImageRep"];
-#undef Z
-	  CIVector *extent =
-	    [CIVector vectorWithX:(CGRectGetMinX (frame) * scaleFactor)
-				Y:(CGRectGetMinY (frame) * scaleFactor)
-				Z:(CGRectGetWidth (frame) * scaleFactor)
-				W:(CGRectGetHeight (frame) * scaleFactor)];
-#define Z (current_buffer->text->z)
 
-	  [filter setValue:extent forKey:kCIInputExtentKey];
 	  image = MRC_AUTORELEASE ([[CIImage alloc]
 				     initWithBitmapImageRep:bitmap]);
 	}

@@ -194,6 +194,25 @@ static unsigned long lookup_pixel_color P_ ((struct frame *f, unsigned long p));
    the bitmaps yourself.  That is, creating a bitmap from the same
    data more than once will not be caught.  */
 
+/* For Mac OS X high resolution versions of images, the actual bitmap
+   width/height (in pixels) is not necessarily the same as the logical
+   image width/height (in points).  We should use the former for
+   bitmap or pixel-level operations especially on postprocessing.
+
+   The width and height arguments to x_create_x_image_and_pixmap
+   should be specified in pixels, but we don't care about the
+   arguments to XGetImage and x_put_x_image, because the Mac port
+   doesn't use these arguments.  For four_corners_best, we set
+   img->corners using pixel coordinates rather than passing pixel
+   width and height as its arguments.  */
+#if USE_MAC_IMAGE_IO
+#define IMAGE_BITMAP_WIDTH(img)		((img)->pixmap->width)
+#define IMAGE_BITMAP_HEIGHT(img)	((img)->pixmap->height)
+#else
+#define IMAGE_BITMAP_WIDTH(img)		((img)->width)
+#define IMAGE_BITMAP_HEIGHT(img)	((img)->height)
+#endif
+
 #ifdef HAVE_MACGUI
 
 static XImagePtr
@@ -1847,7 +1866,12 @@ search_image_cache (f, spec, hash)
     if (img->hash == hash
 	&& !NILP (Fequal (img->spec, spec))
 	&& img->frame_foreground == FRAME_FOREGROUND_PIXEL (f)
-	&& img->frame_background == FRAME_BACKGROUND_PIXEL (f))
+	&& img->frame_background == FRAME_BACKGROUND_PIXEL (f)
+#if USE_MAC_IMAGE_IO
+	&& (img->target_backing_scale == 0
+	    || img->target_backing_scale == FRAME_BACKING_SCALE_FACTOR (f))
+#endif
+	)
       break;
   return img;
 }
@@ -2664,6 +2688,132 @@ slurp_file (file, size)
  ***********************************************************************/
 
 #if USE_MAC_IMAGE_IO
+/* Return the name of 2x image file that corresponds to the given
+   ENCODED_FILE_NAME.  Return nil if the 2x file doesn't exist or not
+   readable.  We assume ENCODED_FILE_NAME stands for an existing file
+   name, so its length does not exceed PATH_MAX thus fits in int.  */
+
+static Lisp_Object
+mac_find_2x_image_file (encoded_file_name)
+     Lisp_Object encoded_file_name;
+{
+  Lisp_Object result;
+  char *p, *last_component;
+  ptrdiff_t prefix_len;
+  int desc;
+
+  p = strrchr (SDATA (encoded_file_name), '/');
+  last_component = p ? p + 1 : (char *) SDATA (encoded_file_name);
+  p = strrchr (last_component, '.');
+  if (p == NULL)
+    p = SDATA (encoded_file_name) + SBYTES (encoded_file_name);
+  prefix_len = p - (char *) SDATA (encoded_file_name);
+  result = make_uninit_string (SBYTES (encoded_file_name) + sizeof ("@2x") - 1);
+  sprintf (SDATA (result), "%.*s@2x%.*s",
+	   (int) prefix_len, SDATA (encoded_file_name),
+	   (int) (SBYTES (encoded_file_name) - prefix_len), p);
+
+  desc = emacs_open (SDATA (result), O_RDONLY, 0);
+  if (desc < 0)
+    result = Qnil;
+  else
+    emacs_close (desc);
+
+  return result;
+}
+
+static Lisp_Object
+mac_preprocess_image_for_2x_file (f, img, file)
+     struct frame *f;
+     struct image *img;
+     Lisp_Object file;
+{
+  Lisp_Object file_2x = mac_find_2x_image_file (file);
+
+  if (!NILP (file_2x))
+    {
+      img->target_backing_scale = FRAME_BACKING_SCALE_FACTOR (f);
+      if (img->target_backing_scale == 2)
+	file = file_2x;
+    }
+
+  return file;
+}
+
+static void
+mac_postprocess_image_for_2x (img)
+     struct image *img;
+{
+  /* Let four_corners_best use the corner positions measured by the
+     actual bitmap width/height data rather than the logical one.  */
+  if (img->target_backing_scale == 2)
+    {
+      img->corners[LEFT_CORNER] = img->corners[TOP_CORNER] = 0;
+      img->corners[RIGHT_CORNER] = img->width;
+      img->corners[BOT_CORNER] = img->height;
+      img->width /= 2;
+      img->height /= 2;
+    }
+}
+
+static void
+mac_cg_image_source_get_pixel_size (source, index, width, height)
+     CGImageSourceRef source;
+     size_t index;
+     int *width, *height;
+{
+  CFDictionaryRef props = CGImageSourceCopyPropertiesAtIndex (source, index,
+							      NULL);
+  int w = 0, h = 0;
+
+  if (props)
+    {
+      CFNumberRef num;
+      int val;
+
+      num = CFDictionaryGetValue (props, kCGImagePropertyPixelWidth);
+      if (num && CFNumberGetValue (num, kCFNumberIntType, &val))
+	w = val;
+      num = CFDictionaryGetValue (props, kCGImagePropertyPixelHeight);
+      if (num && CFNumberGetValue (num, kCFNumberIntType, &val))
+	h = val;
+      CFRelease (props);
+    }
+  *width = w;
+  *height = h;
+}
+
+/* Given a multiimage CGImage SOURCE, return the index of an image
+   that is twice as large as the 0th image in both width and height.
+   If not found, return 0.  */
+
+static size_t
+mac_cg_image_source_find_2x_index (source)
+     CGImageSourceRef source;
+{
+  size_t result = 0;
+  int base_width, base_height;
+
+  mac_cg_image_source_get_pixel_size (source, 0, &base_width, &base_height);
+  if (base_width > 0 && base_height > 0)
+    {
+      size_t i, count = CGImageSourceGetCount (source);
+      int width, height;
+
+      for (i = 1; i < count; i++)
+	{
+	  mac_cg_image_source_get_pixel_size (source, i, &width, &height);
+	  if (width == base_width * 2 && height == base_height * 2)
+	    {
+	      result = i;
+	      break;
+	    }
+	}
+    }
+
+  return result;
+}
+
 static int
 image_load_image_io (f, img, type)
      struct frame *f;
@@ -2720,6 +2870,7 @@ image_load_image_io (f, img, type)
 	  image_error ("Cannot find image file `%s'", specified_file, Qnil);
 	  return 0;
 	}
+      file = mac_preprocess_image_for_2x_file (f, img, file);
       path = cfstring_create_with_utf8_cstring (SDATA (file));
       if (path)
 	{
@@ -2763,6 +2914,18 @@ image_load_image_io (f, img, type)
 
 	      if (INTEGERP (image))
 		ino = XFASTINT (image);
+	      else if (tiff_p && count > 1 && img->target_backing_scale == 0)
+		{
+		  size_t index_2x = mac_cg_image_source_find_2x_index (source);
+
+		  if (index_2x > 0)
+		    {
+		      img->target_backing_scale =
+			FRAME_BACKING_SCALE_FACTOR (f);
+		      if (img->target_backing_scale == 2)
+			ino = index_2x;
+		    }
+		}
 	    }
 	  if (ino < count)
 	    {
@@ -2907,6 +3070,7 @@ image_load_image_io (f, img, type)
 				Fcons (make_number (count),
 				       img->data.lisp_val));
 
+  mac_postprocess_image_for_2x (img);
   /* Maybe fill in the background field while we have ximg handy. */
   if (NILP (image_spec_value (img->spec, QCbackground, NULL)))
     IMAGE_BACKGROUND (img, f, ximg);
@@ -3935,6 +4099,10 @@ xbm_load (f, img)
 	  return 0;
 	}
 
+#if USE_MAC_IMAGE_IO
+      file = mac_preprocess_image_for_2x_file (f, img, file);
+#endif
+
       contents = slurp_file (SDATA (file), &size);
       if (contents == NULL)
 	{
@@ -3944,6 +4112,10 @@ xbm_load (f, img)
 	}
 
       success_p = xbm_load_image (f, img, contents, contents + size);
+      xfree (contents);
+#if USE_MAC_IMAGE_IO
+      mac_postprocess_image_for_2x (img);
+#endif
       UNGCPRO;
     }
   else
@@ -5153,6 +5325,10 @@ xpm_load (f, img)
 	  return 0;
 	}
 
+#if USE_MAC_IMAGE_IO
+      file = mac_preprocess_image_for_2x_file (f, img, file);
+#endif
+
       contents = slurp_file (SDATA (file), &size);
       if (contents == NULL)
 	{
@@ -5163,6 +5339,9 @@ xpm_load (f, img)
 
       success_p = xpm_load_image (f, img, contents, contents + size);
       xfree (contents);
+#if USE_MAC_IMAGE_IO
+      mac_postprocess_image_for_2x (img);
+#endif
       UNGCPRO;
     }
   else
@@ -5520,7 +5699,8 @@ x_to_xcolors (f, img, rgb_p)
   HGDIOBJ prev;
 #endif /* HAVE_NTGUI */
 
-  colors = (XColor *) xmalloc (img->width * img->height * sizeof *colors);
+  colors = (XColor *) xmalloc (IMAGE_BITMAP_WIDTH (img)
+			       * IMAGE_BITMAP_HEIGHT (img) * sizeof *colors);
 
 #ifndef HAVE_NTGUI
   /* Get the X image IMG->pixmap.  */
@@ -5537,15 +5717,15 @@ x_to_xcolors (f, img, rgb_p)
   /* Fill the `pixel' members of the XColor array.  I wished there
      were an easy and portable way to circumvent XGetPixel.  */
   p = colors;
-  for (y = 0; y < img->height; ++y)
+  for (y = 0; y < IMAGE_BITMAP_HEIGHT (img); ++y)
     {
       XColor *row = p;
 
 #if defined (HAVE_X_WINDOWS) || defined (HAVE_NTGUI) || defined (HAVE_MACGUI)
-      for (x = 0; x < img->width; ++x, ++p)
+      for (x = 0; x < IMAGE_BITMAP_WIDTH (img); ++x, ++p)
 	p->pixel = GET_PIXEL (ximg, x, y);
       if (rgb_p)
-	x_query_colors (f, row, img->width);
+	x_query_colors (f, row, IMAGE_BITMAP_WIDTH (img));
 
 #else
 
@@ -5635,11 +5815,12 @@ x_from_xcolors (f, img, colors)
 
   init_color_table ();
 
-  x_create_x_image_and_pixmap (f, img->width, img->height, 0,
+  x_create_x_image_and_pixmap (f, IMAGE_BITMAP_WIDTH (img),
+			       IMAGE_BITMAP_HEIGHT (img), 0,
 			       &oimg, &pixmap);
   p = colors;
-  for (y = 0; y < img->height; ++y)
-    for (x = 0; x < img->width; ++x, ++p)
+  for (y = 0; y < IMAGE_BITMAP_HEIGHT (img); ++y)
+    for (x = 0; x < IMAGE_BITMAP_WIDTH (img); ++x, ++p)
       {
 	unsigned long pixel;
 	pixel = lookup_rgb_color (f, p->red, p->green, p->blue);
@@ -5680,31 +5861,32 @@ x_detect_edges (f, img, matrix, color_adjust)
   for (i = sum = 0; i < 9; ++i)
     sum += eabs (matrix[i]);
 
-#define COLOR(A, X, Y) ((A) + (Y) * img->width + (X))
+#define COLOR(A, X, Y) ((A) + (Y) * IMAGE_BITMAP_WIDTH (img) + (X))
 
-  new = (XColor *) xmalloc (img->width * img->height * sizeof *new);
+  new = (XColor *) xmalloc (IMAGE_BITMAP_WIDTH (img)
+			    * IMAGE_BITMAP_HEIGHT (img) * sizeof *new);
 
-  for (y = 0; y < img->height; ++y)
+  for (y = 0; y < IMAGE_BITMAP_HEIGHT (img); ++y)
     {
       p = COLOR (new, 0, y);
       p->red = p->green = p->blue = 0xffff/2;
-      p = COLOR (new, img->width - 1, y);
+      p = COLOR (new, IMAGE_BITMAP_WIDTH (img) - 1, y);
       p->red = p->green = p->blue = 0xffff/2;
     }
 
-  for (x = 1; x < img->width - 1; ++x)
+  for (x = 1; x < IMAGE_BITMAP_WIDTH (img) - 1; ++x)
     {
       p = COLOR (new, x, 0);
       p->red = p->green = p->blue = 0xffff/2;
-      p = COLOR (new, x, img->height - 1);
+      p = COLOR (new, x, IMAGE_BITMAP_HEIGHT (img) - 1);
       p->red = p->green = p->blue = 0xffff/2;
     }
 
-  for (y = 1; y < img->height - 1; ++y)
+  for (y = 1; y < IMAGE_BITMAP_HEIGHT (img) - 1; ++y)
     {
       p = COLOR (new, 1, y);
 
-      for (x = 1; x < img->width - 1; ++x, ++p)
+      for (x = 1; x < IMAGE_BITMAP_WIDTH (img) - 1; ++x, ++p)
 	{
 	  int r, g, b, y1, x1;
 
@@ -5823,7 +6005,7 @@ x_disable_image (f, img)
       const int h = 15000;
       const int l = 30000;
 
-      for (p = colors, end = colors + img->width * img->height;
+      for (p = colors, end = colors + IMAGE_BITMAP_WIDTH (img) * IMAGE_BITMAP_HEIGHT (img);
 	   p < end;
 	   ++p)
 	{
@@ -5853,20 +6035,20 @@ x_disable_image (f, img)
 
       gc = XCreateGC (dpy, img->pixmap, 0, NULL);
       XSetForeground (dpy, gc, BLACK_PIX_DEFAULT (f));
-      XDrawLine (dpy, img->pixmap, gc, 0, 0,
-		 img->width - 1, img->height - 1);
-      XDrawLine (dpy, img->pixmap, gc, 0, img->height - 1,
-		 img->width - 1, 0);
+      XDrawLine (dpy, img->pixmap, gc, 0, 0, IMAGE_BITMAP_WIDTH (img) - 1,
+		 IMAGE_BITMAP_HEIGHT (img) - 1);
+      XDrawLine (dpy, img->pixmap, gc, 0, IMAGE_BITMAP_HEIGHT (img) - 1,
+		 IMAGE_BITMAP_WIDTH (img) - 1, 0);
       XFreeGC (dpy, gc);
 
       if (img->mask)
 	{
 	  gc = XCreateGC (dpy, img->mask, 0, NULL);
 	  XSetForeground (dpy, gc, MaskForeground (f));
-	  XDrawLine (dpy, img->mask, gc, 0, 0,
-		     img->width - 1, img->height - 1);
-	  XDrawLine (dpy, img->mask, gc, 0, img->height - 1,
-		     img->width - 1, 0);
+	  XDrawLine (dpy, img->mask, gc, 0, 0, IMAGE_BITMAP_WIDTH (img) - 1,
+		     IMAGE_BITMAP_HEIGHT (img) - 1);
+	  XDrawLine (dpy, img->mask, gc, 0, IMAGE_BITMAP_HEIGHT (img) - 1,
+		     IMAGE_BITMAP_WIDTH (img) - 1, 0);
 	  XFreeGC (dpy, gc);
 	}
 #endif /* !HAVE_NS */
@@ -5937,7 +6119,8 @@ x_build_heuristic_mask (f, img, how)
 #ifndef HAVE_NTGUI
 #ifndef HAVE_NS
   /* Create an image and pixmap serving as mask.  */
-  rc = x_create_x_image_and_pixmap (f, img->width, img->height, 1,
+  rc = x_create_x_image_and_pixmap (f, IMAGE_BITMAP_WIDTH (img),
+				    IMAGE_BITMAP_HEIGHT (img), 1,
 				    &mask_img, &img->mask);
   if (!rc)
     return 0;
@@ -5993,8 +6176,8 @@ x_build_heuristic_mask (f, img, how)
   /* Set all bits in mask_img to 1 whose color in ximg is different
      from the background color bg.  */
 #ifndef HAVE_NTGUI
-  for (y = 0; y < img->height; ++y)
-    for (x = 0; x < img->width; ++x)
+  for (y = 0; y < IMAGE_BITMAP_HEIGHT (img); ++y)
+    for (x = 0; x < IMAGE_BITMAP_WIDTH (img); ++x)
 #ifndef HAVE_NS
       XPutPixel (mask_img, x, y, (XGetPixel (ximg, x, y) != bg
 				  ? PIX_MASK_DRAW : PIX_MASK_RETAIN));
@@ -6222,6 +6405,10 @@ pbm_load (f, img)
 	  UNGCPRO;
 	  return 0;
 	}
+
+#if USE_MAC_IMAGE_IO
+      file = mac_preprocess_image_for_2x_file (f, img, file);
+#endif
 
       contents = slurp_file (SDATA (file), &size);
       if (contents == NULL)
@@ -6452,6 +6639,9 @@ pbm_load (f, img)
 
   UNGCPRO;
   xfree (contents);
+#if USE_MAC_IMAGE_IO
+  mac_postprocess_image_for_2x (img);
+#endif
   return 1;
 }
 
@@ -9000,6 +9190,10 @@ svg_load (f, img)
 	  return 0;
 	}
 
+#if USE_MAC_IMAGE_IO
+      file = mac_preprocess_image_for_2x_file (f, img, file);
+#endif
+
       /* Read the entire file into memory.  */
       contents = slurp_file (SDATA (file), &size);
       if (contents == NULL)
@@ -9023,8 +9217,24 @@ svg_load (f, img)
       success_p = svg_load_image (f, img, SDATA (data), SBYTES (data));
     }
 
+#if USE_MAC_IMAGE_IO
+  if (success_p)
+    mac_postprocess_image_for_2x (img);
+#endif
+
   return success_p;
 }
+
+#if USE_MAC_IMAGE_IO
+static void
+mac_svg_set_size_2x (width, height, user_data)
+     gint *width, *height;
+     gpointer user_data;
+{
+  *width *= 2;
+  *height *= 2;
+}
+#endif
 
 /* svg_load_image is a helper function for svg_load, which does the
    actual loading given contents and size, apart from frame and image
@@ -9063,6 +9273,16 @@ svg_load_image (f, img, contents, size)
   fn_g_type_init ();
   /* Make a handle to a new rsvg object.  */
   rsvg_handle = fn_rsvg_handle_new ();
+
+#if USE_MAC_IMAGE_IO
+  if (img->target_backing_scale == 0)
+    {
+      img->target_backing_scale = FRAME_BACKING_SCALE_FACTOR (f);
+      if (img->target_backing_scale == 2)
+	rsvg_handle_set_size_callback (rsvg_handle, mac_svg_set_size_2x,
+				       NULL, NULL);
+    }
+#endif
 
   /* Parse the contents argument and fill in the rsvg_handle.  */
   fn_rsvg_handle_write (rsvg_handle, contents, size, &error);
@@ -9233,6 +9453,8 @@ svg_load (f, img)
 	  return 0;
 	}
 
+      file = mac_preprocess_image_for_2x_file (f, img, file);
+
       /* Read the entire file into memory.  */
       contents = slurp_file (SDATA (file), &size);
       if (contents == NULL)
@@ -9261,6 +9483,7 @@ svg_load (f, img)
 
   if (success_p)
     {
+      mac_postprocess_image_for_2x (img);
       /* Maybe fill in the background field while we have ximg handy. */
       if (NILP (image_spec_value (img->spec, QCbackground, NULL)))
 	IMAGE_BACKGROUND (img, f, img->pixmap);

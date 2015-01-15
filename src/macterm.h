@@ -317,6 +317,9 @@ struct mac_output
      toolkit one).  */
   unsigned native_tool_bar_p : 1;
 
+  /* Backing scale factor (1 or 2), used for rendering images.  */
+  unsigned backing_scale_factor : 2;
+
   /* Relief GCs, colors etc.  */
   struct relief
   {
@@ -365,6 +368,8 @@ struct mac_output
 #define FRAME_CHECK_FULLSCREEN_NEEDED_P(f) \
   ((f)->output_data.mac->check_fullscreen_needed_p)
 #define FRAME_NATIVE_TOOL_BAR_P(f) ((f)->output_data.mac->native_tool_bar_p)
+#define FRAME_BACKING_SCALE_FACTOR(f) \
+  ((f)->output_data.mac->backing_scale_factor)
 
 /* This gives the mac_display_info structure for the display F is on.  */
 #define FRAME_MAC_DISPLAY_INFO(f) (&one_mac_display_info)
@@ -441,10 +446,6 @@ struct scroll_bar {
 /* Trimming off a few pixels from each side prevents
    text from glomming up against the scroll bar */
 #define VERTICAL_SCROLL_BAR_WIDTH_TRIM (0)
-
-/* Variations of possible Aqua scroll bar width.  */
-#define MAC_AQUA_VERTICAL_SCROLL_BAR_WIDTH (15)
-#define MAC_AQUA_SMALL_VERTICAL_SCROLL_BAR_WIDTH (11)
 
 /* Size of hourglass controls */
 #define HOURGLASS_WIDTH (18)
@@ -582,6 +583,14 @@ extern int mac_quit_char_key_p P_ ((UInt32, UInt32));
 
 #if USE_MAC_IMAGE_IO
 extern CGColorSpaceRef mac_cg_color_space_rgb;
+extern int mac_scale_mismatch_detection;
+enum
+  {
+    SCALE_MISMATCH_DONT_DETECT,
+    SCALE_MISMATCH_DETECT_NOT_1X,
+    SCALE_MISMATCH_DETECT_NOT_2X,
+    SCALE_MISMATCH_DETECTED,
+  };
 #endif
 
 extern void x_set_sticky P_ ((struct frame *, Lisp_Object, Lisp_Object));
@@ -649,6 +658,27 @@ extern void free_frame_menubar P_ ((struct frame *));
 extern Lisp_Object mac_nsvalue_to_lisp P_ ((CFTypeRef));
 extern void mac_alert_sound_play P_ ((void));
 extern OSStatus install_application_handler P_ ((void));
+extern void mac_set_frame_window_title P_ ((struct frame *, CFStringRef));
+extern void mac_set_frame_window_modified P_ ((struct frame *, Boolean));
+extern Boolean mac_is_frame_window_visible P_ ((struct frame *));
+extern Boolean mac_is_frame_window_collapsed P_ ((struct frame *));
+extern void mac_bring_frame_window_to_front P_ ((struct frame *));
+extern void mac_send_frame_window_behind P_ ((struct frame *));
+extern void mac_hide_frame_window P_ ((struct frame *));
+extern void mac_show_frame_window P_ ((struct frame *));
+extern OSStatus mac_collapse_frame_window P_ ((struct frame *, Boolean));
+extern Boolean mac_is_frame_window_front P_ ((struct frame *));
+extern void mac_activate_frame_window P_ ((struct frame *));
+extern OSStatus mac_move_frame_window_structure P_ ((struct frame *,
+						     short, short));
+extern void mac_move_frame_window P_ ((struct frame *, short, short, Boolean));
+extern void mac_size_frame_window P_ ((struct frame *, short, short, Boolean));
+extern OSStatus mac_set_frame_window_alpha P_ ((struct frame *, CGFloat));
+extern OSStatus mac_get_frame_window_alpha P_ ((struct frame *, CGFloat *));
+extern void mac_get_global_mouse P_ ((Point *));
+extern Boolean mac_is_frame_window_toolbar_visible P_ ((struct frame *));
+extern CGRect mac_rect_make P_ ((struct frame *, CGFloat, CGFloat,
+				 CGFloat, CGFloat));
 extern void mac_get_window_structure_bounds P_ ((struct frame *,
 						 NativeRectangle *));
 extern void mac_get_frame_mouse P_ ((struct frame *, Point *));
@@ -675,6 +705,7 @@ extern void mac_update_scroll_bar_bounds P_ ((struct scroll_bar *));
 extern void mac_redraw_scroll_bar P_ ((struct scroll_bar *));
 extern void x_set_toolkit_scroll_bar_thumb P_ ((struct scroll_bar *,
 						int, int, int));
+extern int mac_get_default_scroll_bar_width P_ ((struct frame *));
 extern int mac_font_panel_visible_p P_ ((void));
 extern OSStatus mac_show_hide_font_panel P_ ((void));
 extern OSStatus mac_set_font_info_for_selection P_ ((struct frame *, int, int,

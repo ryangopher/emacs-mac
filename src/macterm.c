@@ -240,6 +240,11 @@ GC_BACK_COLOR (gc)
 #define GC_FONT(gc)		((gc)->xgcv.font)
 #define FRAME_NORMAL_GC(f)	((f)->output_data.mac->normal_gc)
 
+#if USE_MAC_IMAGE_IO
+/* State for image vs. backing scaling factor mismatch detection.  */
+int mac_scale_mismatch_detection;
+#endif
+
 /* Fringe bitmaps.  */
 
 static int max_fringe_bmp = 0;
@@ -392,24 +397,33 @@ mac_clear_window (f)
 
 /* Mac replacement for XCopyArea.  */
 
+#define MAC_DRAW_CG_IMAGE_OVERLAY		(1 << 0)
+#define MAC_DRAW_CG_IMAGE_2X			(1 << 1)
+#define MAC_DRAW_CG_IMAGE_NO_INTERPOLATION	(1 << 2)
+
 static void
 mac_draw_cg_image (image, f, gc, src_x, src_y, width, height,
-		   dest_x, dest_y, overlay_p)
+		   dest_x, dest_y, flags)
      CGImageRef image;
      struct frame *f;
      GC gc;
      int src_x, src_y;
      unsigned int width, height;
-     int dest_x, dest_y, overlay_p;
+     int dest_x, dest_y, flags;
 {
   CGContextRef context;
   CGRect dest_rect, bounds;
 
   context = mac_begin_cg_clip (f, gc);
   dest_rect = mac_rect_make (f, dest_x, dest_y, width, height);
-  bounds = mac_rect_make (f, dest_x - src_x, dest_y - src_y,
-			  CGImageGetWidth (image), CGImageGetHeight (image));
-  if (!overlay_p)
+  if (!(flags & MAC_DRAW_CG_IMAGE_2X))
+    bounds = mac_rect_make (f, dest_x - src_x, dest_y - src_y,
+			    CGImageGetWidth (image), CGImageGetHeight (image));
+  else
+    bounds = mac_rect_make (f, dest_x - src_x, dest_y - src_y,
+			    CGImageGetWidth (image) / 2,
+			    CGImageGetHeight (image) / 2);
+  if (!(flags & MAC_DRAW_CG_IMAGE_OVERLAY))
     {
       CG_SET_FILL_COLOR_WITH_GC_BACKGROUND (context, gc);
       CGContextFillRect (context, dest_rect);
@@ -420,6 +434,8 @@ mac_draw_cg_image (image, f, gc, src_x, src_y, width, height,
   CGContextScaleCTM (context, 1, -1);
   if (CGImageIsMask (image))
     CG_SET_FILL_COLOR_WITH_GC_FOREGROUND (context, gc);
+  if (flags & MAC_DRAW_CG_IMAGE_NO_INTERPOLATION)
+    CGContextSetInterpolationQuality (context, kCGInterpolationNone);
   bounds.origin = CGPointZero;
   CGContextDrawImage (context, bounds, image);
   mac_end_cg_clip (f);
@@ -1281,6 +1297,7 @@ x_draw_fringe_bitmap (w, row, p)
   if (p->which && p->which < max_fringe_bmp)
     {
       XGCValues gcv;
+      int flags;
 
       XGetGCValues (display, face->gc, GCForeground, &gcv);
       XSetForeground (display, face->gc,
@@ -1288,8 +1305,13 @@ x_draw_fringe_bitmap (w, row, p)
 		       ? (p->overlay_p ? face->background
 			  : f->output_data.mac->cursor_pixel)
 		       : face->foreground));
+      flags = overlay_p ? MAC_DRAW_CG_IMAGE_OVERLAY : 0;
+#if USE_MAC_IMAGE_IO
+      if (FRAME_BACKING_SCALE_FACTOR (f) != 1)
+	flags |= MAC_DRAW_CG_IMAGE_NO_INTERPOLATION;
+#endif
       mac_draw_cg_image (fringe_bmp[p->which], f, face->gc, 0, p->dh,
-			 p->wd, p->h, p->x, p->y, overlay_p);
+			 p->wd, p->h, p->x, p->y, flags);
       XSetForeground (display, face->gc, gcv.foreground);
     }
 
@@ -2217,11 +2239,22 @@ x_draw_image_foreground (s)
 
   if (s->img->pixmap)
     {
+      int flags = MAC_DRAW_CG_IMAGE_OVERLAY;
+
       x_set_glyph_string_clipping (s);
 
+#if USE_MAC_IMAGE_IO
+      if ((mac_scale_mismatch_detection == SCALE_MISMATCH_DETECT_NOT_1X
+	   && s->img->target_backing_scale == 2)
+	  || (mac_scale_mismatch_detection == SCALE_MISMATCH_DETECT_NOT_2X
+	      && s->img->target_backing_scale == 1))
+	mac_scale_mismatch_detection = SCALE_MISMATCH_DETECTED;
+      if (s->img->target_backing_scale == 2)
+	flags |= MAC_DRAW_CG_IMAGE_2X;
+#endif
       mac_draw_cg_image (s->img->data.ptr_val,
 			 s->f, s->gc, s->slice.x, s->slice.y,
-			 s->slice.width, s->slice.height, x, y, 1);
+			 s->slice.width, s->slice.height, x, y, flags);
       if (!s->img->mask)
 	{
 	  /* When the image has a mask, we can expect that at
@@ -3719,24 +3752,6 @@ mac_get_window_gravity_reference_point (f, win_gravity, x, y)
     case SouthEastGravity:
       *y = bounds.y + bounds.height;
       break;
-    }
-}
-
-CGImageRef
-mac_image_spec_to_cg_image (f, image)
-     struct frame *f;
-     Lisp_Object image;
-{
-  if (!valid_image_p (image))
-    return NULL;
-  else
-    {
-      int img_id = lookup_image (f, image);
-      struct image *img = IMAGE_FROM_ID (f, img_id);
-
-      prepare_image_for_display (f, img);
-
-      return img->data.ptr_val;
     }
 }
 
@@ -5910,7 +5925,7 @@ x_delete_display (dpyinfo)
 }
 
 
-void
+static void
 mac_handle_user_signal (sig)
      int sig;
 {
