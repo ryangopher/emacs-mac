@@ -63,6 +63,8 @@ Lisp_Object Qdebug_on_next_call;
 
 Lisp_Object Vmac_help_topics;
 
+int mac_popup_menu_add_contexual_menu;
+
 extern Lisp_Object Qmenu_bar, Qmac_apple_event;
 
 extern Lisp_Object QCtoggle, QCradio;
@@ -1106,6 +1108,12 @@ search feature works only when compiled and run on Mac OS X 10.6 and
 later, and otherwise the value is kept to t so as to avoid needless
 recalculation.  */);
   Vmac_help_topics = Qt;
+
+  DEFVAR_BOOL ("mac-popup-menu-add-contexual-menu",
+	       &mac_popup_menu_add_contexual_menu,
+    doc: /* Non-nil means contexual menu is added to popup menu.
+This works on OS X 10.6 and later.  */);
+  mac_popup_menu_add_contexual_menu = 0;
 }
 
 /* arch-tag: 40b2c6c7-b8a9-4a49-b930-1b2707184cce

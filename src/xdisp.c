@@ -20011,7 +20011,8 @@ right_overwritten (s)
     {
       int x = 0, i;
       struct glyph *glyphs = s->row->glyphs[s->area];
-      int first = (s->first_glyph - glyphs) + (s->cmp ? 1 : s->nchars);
+      int first = (s->first_glyph - glyphs
+		   + (s->first_glyph->type == COMPOSITE_GLYPH ? 1 : s->nchars));
       int end = s->row->used[s->area];
 
       for (i = first; i < end && s->right_overhang > x; ++i)
@@ -20035,7 +20036,8 @@ right_overwriting (s)
   int i, k, x;
   int end = s->row->used[s->area];
   struct glyph *glyphs = s->row->glyphs[s->area];
-  int first = (s->first_glyph - glyphs) + (s->cmp ? 1 : s->nchars);
+  int first = (s->first_glyph - glyphs
+	       + (s->first_glyph->type == COMPOSITE_GLYPH ? 1 : s->nchars));
 
   k = -1;
   x = 0;

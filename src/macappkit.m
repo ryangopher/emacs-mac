@@ -1329,7 +1329,13 @@ static EventRef peek_if_next_event_activates_menu_bar P_ ((void));
 	if (!(mac_mapped_modifiers (modifiers, key_code)
 	      & ~(mac_pass_command_to_system ? cmdKey : 0)
 	      & ~(mac_pass_control_to_system ? controlKey : 0))
-	    && ([NSApp keyWindow] || (flags & NSCommandKeyMask)))
+	    && ([NSApp keyWindow] || (flags & NSCommandKeyMask))
+	    /* Avoid activating context help mode with `help' key.  */
+	    && !([[[NSApp keyWindow] firstResponder]
+		   isMemberOfClass:[EmacsView class]]
+		 && key_code == 0x72 /* kVK_Help */
+		 && (flags & (NSControlKeyMask | NSAlternateKeyMask
+			      | NSCommandKeyMask)) == 0))
 	  {
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 1050
 	    /* This is a workaround for the problem that Control-Tab
@@ -2223,6 +2229,29 @@ extern void mac_save_keyboard_input_source P_ ((void));
 #endif
 }
 
+- (void)attachOverlayWindow;
+{
+  struct frame *f = emacsFrame;
+  EmacsWindow *window = (__bridge id) FRAME_MAC_WINDOW (f);
+
+  [window addChildWindow:overlayWindow ordered:NSWindowAbove];
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1030 && MAC_OS_X_VERSION_MIN_REQUIRED != 1020
+  [window addObserver:self forKeyPath:@"alphaValue" options:0 context:NULL];
+#endif
+  [overlayView adjustWindowFrame];
+  [overlayWindow orderFront:nil];
+}
+
+- (void)detachOverlayWindow
+{
+  NSWindow *window = [overlayWindow parentWindow];
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1030 && MAC_OS_X_VERSION_MIN_REQUIRED != 1020
+  [window removeObserver:self forKeyPath:@"alphaValue"];
+#endif
+  [window removeChildWindow:overlayWindow];
+}
+
 - (void)setupWindow
 {
   struct frame *f = emacsFrame;
@@ -2282,10 +2311,7 @@ extern void mac_save_keyboard_input_source P_ ((void));
 	[window setCollectionBehavior:[oldWindow collectionBehavior]];
 
       [oldWindow setDelegate:nil];
-#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1030 && MAC_OS_X_VERSION_MIN_REQUIRED != 1020
-      [oldWindow removeObserver:self forKeyPath:@"alphaValue"];
-#endif
-      [oldWindow removeChildWindow:overlayWindow];
+      [self detachOverlayWindow];
       MRC_RELEASE (hourglass);
       hourglass = nil;
     }
@@ -2317,12 +2343,7 @@ extern void mac_save_keyboard_input_source P_ ((void));
 
       [window setShowsResizeIndicator:NO];
       [self setupOverlayWindowAndView];
-      [window addChildWindow:overlayWindow ordered:NSWindowAbove];
-#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1030 && MAC_OS_X_VERSION_MIN_REQUIRED != 1020
-      [window addObserver:self forKeyPath:@"alphaValue" options:0 context:NULL];
-#endif
-      [overlayView adjustWindowFrame];
-      [overlayWindow orderFront:nil];
+      [self attachOverlayWindow];
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1060
       if (has_full_screen_with_dedicated_desktop ())
 	[window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
@@ -3130,22 +3151,26 @@ extern void mac_save_keyboard_input_source P_ ((void));
 
   [emacsController updatePresentationOptions];
   [self updateCollectionBehavior];
-  /* This is a workaround.  */
-  [overlayWindow orderFront:nil];
 }
 
 - (NSArray *)customWindowsToEnterFullScreenForWindow:(NSWindow *)window
 {
   [self setupFullScreenTransitionWindow];
+  /* Custom windows for full screen transition must be on-screen on OS
+     X 10.8.  */
+  [fullScreenTransitionWindow orderFront:nil];
 
-  return [NSArray arrayWithObjects:window, fullScreenTransitionWindow, nil];
+  return [NSArray arrayWithObjects:fullScreenTransitionWindow, window, nil];
 }
 
 - (void)window:(NSWindow *)window
   startCustomAnimationToEnterFullScreenWithDuration:(NSTimeInterval)duration
 {
   CGFloat previousAlphaValue = [window alphaValue];
-  NSRect emacsViewRect, frameRect;
+  NSUInteger previousAutoresizingMask = [emacsView autoresizingMask];
+  NSRect srcRect, destRect, emacsViewRect;
+
+  [self detachOverlayWindow];
 
   emacsViewRect = [emacsView convertRect:[emacsView bounds] toView:nil];
 
@@ -3154,15 +3179,20 @@ extern void mac_save_keyboard_input_source P_ ((void));
       fullscreenFrameParameterAfterTransition = &Qfullscreen;
       fullScreenTargetState = WM_STATE_FULLSCREEN | WM_STATE_DEDICATED_DESKTOP;
     }
-  frameRect = [self preprocessWindowManagerStateChange:fullScreenTargetState];
+  destRect = [self preprocessWindowManagerStateChange:fullScreenTargetState];
 
-  [fullScreenTransitionWindow orderFront:nil];
   [window setAlphaValue:0];
   [window setStyleMask:([window styleMask] | NSFullScreenWindowMask)];
 
-  frameRect = [self postprocessWindowManagerStateChange:frameRect];
+  destRect = [self postprocessWindowManagerStateChange:destRect];
+  [window setFrame:destRect display:YES];
 
-  [window setFrame:frameRect display:YES];
+  [emacsView setAutoresizingMask:(NSViewMaxXMargin | NSViewMinYMargin)];
+  srcRect = [fullScreenTransitionWindow frame];
+  srcRect.size.height = NSMaxY (emacsViewRect);
+  [(EmacsWindow *)window setConstrainingToScreenSuspended:YES];
+  [window setFrame:srcRect display:YES];
+  [window setAlphaValue:1];
 
   [
 #if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
@@ -3171,14 +3201,13 @@ extern void mac_save_keyboard_input_source P_ ((void));
    (NSClassFromString (@"NSAnimationContext"))
 #endif
       runAnimationGroup:^(NSAnimationContext *context) {
-      NSRect transitionWindowFrameRect = [fullScreenTransitionWindow frame];
+      NSRect transitionWindowFrameRect = destRect;
 
-      transitionWindowFrameRect.origin.x = frameRect.origin.x;
-      transitionWindowFrameRect.origin.y =
-	NSMaxY (frameRect) - NSMaxY (emacsViewRect);
+      transitionWindowFrameRect.size.height +=
+	NSHeight ([fullScreenTransitionWindow frame]) - NSMaxY (emacsViewRect);
 
       [context setDuration:duration];
-      [[window animator] setAlphaValue:1];
+      [[window animator] setFrame:destRect display:YES];
       [[fullScreenTransitionWindow animator] setAlphaValue:0];
       [[fullScreenTransitionWindow animator]
 	setFrame:transitionWindowFrameRect display:YES];
@@ -3188,21 +3217,33 @@ extern void mac_save_keyboard_input_source P_ ((void));
       MRC_RELEASE (fullScreenTransitionWindow);
       fullScreenTransitionWindow = nil;
       [window setAlphaValue:previousAlphaValue];
+      [(EmacsWindow *)window setConstrainingToScreenSuspended:NO];
+      [emacsView setAutoresizingMask:previousAutoresizingMask];
+      [self attachOverlayWindow];
+      /* Mac OS X 10.7 needs this.  */
+      [emacsView setFrame:[[emacsView superview] bounds]];
     }];
 }
 
 - (NSArray *)customWindowsToExitFullScreenForWindow:(NSWindow *)window
 {
   [self setupFullScreenTransitionWindow];
+  /* Custom windows for full screen transition must be on-screen on OS
+     X 10.8.  */
+  [fullScreenTransitionWindow orderFront:nil];
 
-  return [NSArray arrayWithObjects:window, fullScreenTransitionWindow, nil];
+  return [NSArray arrayWithObjects:fullScreenTransitionWindow, window, nil];
 }
 
 - (void)window:(NSWindow *)window
   startCustomAnimationToExitFullScreenWithDuration:(NSTimeInterval)duration
 {
   CGFloat previousAlphaValue = [window alphaValue];
+  NSInteger previousWindowLevel = [window level];
+  NSUInteger previousAutoresizingMask = [emacsView autoresizingMask];
   NSRect srcRect = [window frame], destRect, emacsViewRect;
+
+  [self detachOverlayWindow];
 
   if (fullScreenTargetState & WM_STATE_DEDICATED_DESKTOP)
     {
@@ -3211,18 +3252,20 @@ extern void mac_save_keyboard_input_source P_ ((void));
     }
   destRect = [self preprocessWindowManagerStateChange:fullScreenTargetState];
 
-  [fullScreenTransitionWindow orderFront:nil];
-  [window setAlphaValue:1];
+  [window setAlphaValue:0];
   [window setStyleMask:([window styleMask] & ~NSFullScreenWindowMask)];
 
   destRect = [self postprocessWindowManagerStateChange:destRect];
   [window setFrame:destRect display:YES];
 
   emacsViewRect = [emacsView convertRect:[emacsView bounds] toView:nil];
-  srcRect.origin.y = NSMaxY (srcRect) - NSMaxY (emacsViewRect);
-  srcRect.size = destRect.size;
+  [emacsView setAutoresizingMask:(NSViewMaxXMargin | NSViewMinYMargin)];
+  srcRect.size.height += NSHeight (destRect) - NSMaxY (emacsViewRect);
   [(EmacsWindow *)window setConstrainingToScreenSuspended:YES];
   [window setFrame:srcRect display:YES];
+  [window setAlphaValue:1];
+  [window setLevel:(NSMainMenuWindowLevel + 1)];
+  [fullScreenTransitionWindow setLevel:(NSMainMenuWindowLevel + 1)];
 
   [
 #if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
@@ -3246,7 +3289,12 @@ extern void mac_save_keyboard_input_source P_ ((void));
       MRC_RELEASE (fullScreenTransitionWindow);
       fullScreenTransitionWindow = nil;
       [window setAlphaValue:previousAlphaValue];
+      [window setLevel:previousWindowLevel];
       [(EmacsWindow *)window setConstrainingToScreenSuspended:NO];
+      [emacsView setAutoresizingMask:previousAutoresizingMask];
+      [self attachOverlayWindow];
+      /* Mac OS X 10.7 needs this.  */
+      [emacsView setFrame:[[emacsView superview] bounds]];
     }];
 }
 #endif
@@ -4986,7 +5034,8 @@ extern CFStringRef mac_ax_string_for_range P_ ((struct frame *,
 
 - (void)viewFrameDidChange:(NSNotification *)notification
 {
-  if (![self inLiveResize])
+  if (![self inLiveResize]
+      && ([self autoresizingMask] & (NSViewWidthSizable | NSViewHeightSizable)))
     {
       struct frame *f = [self emacsFrame];
       NSRect frameRect = [self frame];
@@ -5234,7 +5283,8 @@ create_resize_indicator_image ()
   NSWindow *window = [self window];
   NSWindow *parentWindow = [window parentWindow];
 
-  [window setFrame:[parentWindow frame] display:YES];
+  if (parentWindow)
+    [window setFrame:[parentWindow frame] display:YES];
 }
 
 @end				// EmacsOverlayView
@@ -5712,14 +5762,31 @@ static BOOL NonmodalScrollerPagingBehavior;
 {
   if (knobSlotSpan < 0)
     {
+      BOOL enabled = [self isEnabled];
+      float floatValue = [self floatValue];
+      CGFloat knobProportion = [self knobProportion];
       NSRect bounds, knobSlotRect;
 
       bounds = [self bounds];
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+      [self setDoubleValue:0];
+      [self setKnobProportion:0];
+#else
+      [self setFloatValue:0 knobProportion:0];
+#endif
+      [self setEnabled:YES];
       knobSlotRect = [self rectForPart:NSScrollerKnobSlot];
       if (NSHeight (bounds) >= NSWidth (bounds))
 	knobSlotSpan = NSHeight (knobSlotRect);
       else
 	knobSlotSpan = NSWidth (knobSlotRect);
+      [self setEnabled:enabled];
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+      [self setDoubleValue:floatValue];
+      [self setKnobProportion:knobProportion];
+#else
+      [self setFloatValue:floatValue knobProportion:knobProportion];
+#endif
     }
 
   return knobSlotSpan;
@@ -7622,6 +7689,7 @@ mac_font_dialog (f)
  ************************************************************************/
 
 extern int popup_activated_flag;
+extern int mac_popup_menu_add_contexual_menu;
 extern int name_is_separator P_ ((const char *));
 
 static void update_services_menu_types P_ ((void));
@@ -8087,8 +8155,9 @@ restore_show_help_function (old_show_help_function)
 
 - (void)popUpMenu:(NSMenu *)menu atLocationInEmacsView:(NSPoint)location
 {
-  if ([menu respondsToSelector:
-	      @selector(popUpMenuPositioningItem:atLocation:inView:)])
+  if (!mac_popup_menu_add_contexual_menu
+      && [menu respondsToSelector:
+		 @selector(popUpMenuPositioningItem:atLocation:inView:)])
     [menu popUpMenuPositioningItem:nil atLocation:location inView:emacsView];
   else
     {
@@ -9305,8 +9374,8 @@ extern Lisp_Object Qservice, Qpaste, Qperform;
 
   if ([sendType length] == 0
       || (!NILP (Fx_selection_owner_p (Vmac_service_selection))
-	  && (mac_get_selection_from_symbol (Vmac_service_selection, 0,
-					     &sel) == noErr)
+	  && mac_get_selection_from_symbol (Vmac_service_selection, 0,
+					    &sel) == noErr
 	  && sel
 	  && (array = [NSArray arrayWithObject:sendType],
 	      [(__bridge NSPasteboard *)sel availableTypeFromArray:array])))
@@ -10790,6 +10859,7 @@ extern Lisp_Object Qpage_curl, Qpage_curl_with_shadow, Qripple, Qswipe;
 		    forKey:kCATransactionDisableActions];
   [[layerHostingView layer] addSublayer:layer];
   [CA_TRANSACTION flush];
+  [layerHostingView display];
 }
 
 static Lisp_Object
@@ -12614,6 +12684,13 @@ mac_font_shape_1 (font, string, glyph_layouts, glyph_len, screen_font_p)
   (void) [layoutManager glyphRangeForTextContainer:textContainer];
 
   spaceLocation = [layoutManager locationForGlyphAtIndex:stringLength];
+
+  /* Remove the appended trailing space because otherwise it may
+     generate a wrong result for a right-to-left text.  */
+  [textStorage beginEditing];
+  [textStorage deleteCharactersInRange:(NSMakeRange (stringLength, 1))];
+  [textStorage endEditing];
+  (void) [layoutManager glyphRangeForTextContainer:textContainer];
 
   i = 0;
   while (i < stringLength)
