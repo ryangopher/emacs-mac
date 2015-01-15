@@ -2148,10 +2148,15 @@ either in the current buffer or in the echo area."
 	 (text (or (cdr type-text) ""))
 	 (decode-fun (if (equal (car type-text) "TEXT")
 			 'mac-TEXT-to-string 'mac-utxt-to-string))
-	 (script-language (mac-ae-script-language ae "tssl"))
-	 (coding (or (cdr (assq (car script-language)
-				mac-script-code-coding-systems))
-		     'mac-roman))
+	 ;; Don't rely on kEventParamTextInputSendSLRec ("tssl") if
+	 ;; kEventParamTextInputSendComponentInstance ("tsci") is not
+	 ;; available (it sometimes happens on Mac OS X 10.6).
+	 (script-language (and (mac-ae-parameter ae "tsci")
+			       (mac-ae-script-language ae "tssl")))
+	 (coding (and script-language
+		      (or (cdr (assq (car script-language)
+				     mac-script-code-coding-systems))
+			  'mac-roman)))
 	 (fix-len (mac-ae-number ae "tsfx"))
 	 ;; Optional parameters
 	 (hilite-rng (mac-ae-text-range-array ae "tshi"))
@@ -2224,10 +2229,15 @@ either in the current buffer or in the echo area."
   (interactive "e")
   (let* ((ae (mac-event-ae event))
 	 (text (cdr (mac-ae-parameter ae "tstx" "utxt")))
-	 (script-language (mac-ae-script-language ae "tssl"))
-	 (coding (or (cdr (assq (car script-language)
-				mac-script-code-coding-systems))
-		     'mac-roman)))
+	 ;; Don't rely on kEventParamTextInputSendSLRec ("tssl") if
+	 ;; kEventParamTextInputSendComponentInstance ("tsci") is not
+	 ;; available (it sometimes happens on Mac OS X 10.6).
+	 (script-language (and (mac-ae-parameter ae "tsci")
+			       (mac-ae-script-language ae "tssl")))
+	 (coding (and script-language
+		      (or (cdr (assq (car script-language)
+				     mac-script-code-coding-systems))
+			  'mac-roman))))
     (if text
 	(mac-unread-string (mac-utxt-to-string text coding)))))
 
@@ -2250,9 +2260,10 @@ either in the current buffer or in the echo area."
 	 (text (cdr (mac-ae-parameter ae)))
 	 (selected-range (cdr (mac-ae-parameter ae "selectedRange")))
 	 (script-language (mac-ae-script-language ae "tssl"))
-	 (coding (or (cdr (assq (car script-language)
-				mac-script-code-coding-systems))
-		     'mac-roman)))
+	 (coding (and script-language
+		      (or (cdr (assq (car script-language)
+				     mac-script-code-coding-systems))
+			  'mac-roman))))
     (let ((use-echo-area
 	   (or isearch-mode
 	       (and cursor-in-echo-area (current-message))
@@ -2315,9 +2326,10 @@ either in the current buffer or in the echo area."
   (let* ((ae (mac-event-ae event))
 	 (text (cdr (mac-ae-parameter ae)))
 	 (script-language (mac-ae-script-language ae "tssl"))
-	 (coding (or (cdr (assq (car script-language)
-				mac-script-code-coding-systems))
-		     'mac-roman)))
+	 (coding (and script-language
+		      (or (cdr (assq (car script-language)
+				     mac-script-code-coding-systems))
+			  'mac-roman))))
     (overlay-put mac-ts-active-input-overlay 'before-string nil)
     (let ((msg (current-message))
 	  message-log-max)

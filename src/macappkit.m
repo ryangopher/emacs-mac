@@ -321,9 +321,29 @@ NSRectToCGRect (nsrect)
   [self postEvent:event atStart:YES];
 }
 
-- (void)stopAfterInvocation:(id)anArgument
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+- (void)stopAfterCallingBlock:(void (^)(void))block
 {
-  [anArgument invoke];
+  block ();
+  [self stop:nil];
+  [self postDummyEvent];
+}
+
+/* Temporarily run the main event loop during the call of the given
+   block.  */
+
+- (void)runTemporarilyWithBlock:(void (^)(void))block
+{
+  [[NSRunLoop currentRunLoop]
+    performSelector:@selector(stopAfterCallingBlock:)
+    target:self argument:block order:0
+    modes:[NSArray arrayWithObject:NSDefaultRunLoopMode]];
+  [self run];
+}
+#else
+- (void)stopAfterInvocation:(NSInvocation *)invocation
+{
+  [invocation invoke];
   [self stop:nil];
   [self postDummyEvent];
 }
@@ -339,6 +359,7 @@ NSRectToCGRect (nsrect)
     modes:[NSArray arrayWithObject:NSDefaultRunLoopMode]];
   [self run];
 }
+#endif
 
 @end				// NSApplication (Emacs)
 
@@ -409,6 +430,9 @@ static IMP impClose, impOrderOut;
     }
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      [NSApp runTemporarilyWithBlock:^{(*impClose) (self, _cmd);}];
+#else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
 	[NSInvocation invocationWithMethodSignature:signature];
@@ -417,6 +441,7 @@ static IMP impClose, impOrderOut;
       [invocation setSelector:_cmd];
 
       [NSApp runTemporarilyWithInvocation:invocation];
+#endif
     }
 }
 
@@ -447,6 +472,9 @@ static IMP impClose, impOrderOut;
     }
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      [NSApp runTemporarilyWithBlock:^{(*impOrderOut) (self, _cmd, sender);}];
+#else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
 	[NSInvocation invocationWithMethodSignature:signature];
@@ -456,6 +484,7 @@ static IMP impClose, impOrderOut;
       [invocation setArgument:&sender atIndex:2];
 
       [NSApp runTemporarilyWithInvocation:invocation];
+#endif
     }
 }
 
@@ -895,6 +924,15 @@ static EventRef peek_if_next_event_activates_menu_bar P_ ((void));
     }
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      __block int result;
+
+      [NSApp runTemporarilyWithBlock:^{
+	  result = [self handleQueuedNSEventsWithHoldingQuitIn:bufp];
+	}];
+
+      return result;
+#else
       static NSInvocation *invocation = nil;
       int result;
 
@@ -916,6 +954,7 @@ static EventRef peek_if_next_event_activates_menu_bar P_ ((void));
       [invocation getReturnValue:&result];
 
       return result;
+#endif
     }
 }
 
@@ -1403,7 +1442,7 @@ Boolean
 mac_is_window_visible (window)
      Window window;
 {
-  return [(NSWindow *)window isVisible];
+  return [(NSWindow *)window isVisible] || [(NSWindow *)window isMiniaturized];
 }
 
 Boolean
@@ -1436,6 +1475,9 @@ void
 mac_hide_window (window)
      Window window;
 {
+  if ([(NSWindow *)window isMiniaturized])
+    [(NSWindow *)window deminiaturize:nil];
+
   [(NSWindow *)window orderOut:nil];
   [(EmacsWindow *)window setNeedsOrderFrontOnUnhide:NO];
 }
@@ -2354,10 +2396,22 @@ get_text_input_script_language (slrec)
   OSStatus err = noErr;
 
   if (current_text_input_event)
-    err = GetEventParameter (current_text_input_event,
-			     kEventParamTextInputSendSLRec,
-			     typeIntlWritingCode, NULL,
-			     sizeof (ScriptLanguageRecord), NULL, slrec);
+    {
+      ComponentInstance ci;
+
+      /* Don't rely on kEventParamTextInputSendSLRec if
+	 kEventParamTextInputSendComponentInstance is not
+	 available.  */
+      err = GetEventParameter (current_text_input_event,
+			       kEventParamTextInputSendComponentInstance,
+			       typeComponentInstance, NULL,
+			       sizeof (ComponentInstance), NULL, &ci);
+      if (err == noErr)
+	err = GetEventParameter (current_text_input_event,
+				 kEventParamTextInputSendSLRec,
+				 typeIntlWritingCode, NULL,
+				 sizeof (ScriptLanguageRecord), NULL, slrec);
+    }
   else
     {
       slrec->fScript = GetScriptManagerVariable (smKeyScript);
@@ -2563,49 +2617,68 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 	  && XINT (w->last_modified) == BUF_MODIFF (b)
 	  && XINT (w->last_overlay_modified) == BUF_OVERLAY_MODIFF (b))
 	{
-	  int start = BUF_BEGV (b) + theRange.location;
-	  unichar *characters = xmalloc (theRange.length * sizeof (unichar));
+	  int start, end, begv = BUF_BEGV (b), zv = BUF_ZV (b);
 
-	  if (mac_store_buffer_text_to_unicode_chars (b, start,
-						      start + theRange.length,
-						      (UniChar *) characters))
+	  /* The documentation says "An implementation of this method
+	     should be prepared for theRange to be out-of-bounds".  */
+	  start = begv + theRange.location;
+	  end = start + theRange.length;
+	  if (start < begv)
+	    start = begv;
+	  else if (start > zv)
+	    start = zv;
+	  if (end < begv)
+	    end = begv;
+	  else if (end > zv)
+	    end = zv;
+
+	  if (start < end)
 	    {
-	      NSString *string = [NSString stringWithCharacters:characters
-					   length:theRange.length];
-	      NSMutableAttributedString *attributedString =
-		[[[NSMutableAttributedString alloc] initWithString:string]
-		  autorelease];
-	      int i;
+	      int length = end - start;
+	      unichar *characters = xmalloc (length * sizeof (unichar));
 
-	      [attributedString beginEditing];
-	      for (i = 0; i < theRange.length; i++)
+	      if (mac_store_buffer_text_to_unicode_chars (b, start, end,
+							  ((UniChar *)
+							   characters)))
 		{
-		  NSFont *font = nil;
-		  int hpos, vpos, x, y;
+		  NSString *string = [NSString stringWithCharacters:characters
+							     length:length];
+		  NSMutableAttributedString *attributedString =
+		    [[[NSMutableAttributedString alloc] initWithString:string]
+		      autorelease];
+		  int i;
 
-		  if (fast_find_position (w, start + i, &hpos, &vpos, &x, &y,
-					  Qnil))
+		  [attributedString beginEditing];
+		  for (i = 0; i < length; i++)
 		    {
-		      struct glyph_row *row = MATRIX_ROW (w->current_matrix,
-							  vpos);
-		      struct glyph *glyph = row->glyphs[TEXT_AREA] + hpos;
+		      NSFont *font = nil;
+		      int hpos, vpos, x, y;
 
-		      if (glyph->type == CHAR_GLYPH
-			  && !glyph->glyph_not_available_p)
+		      if (fast_find_position (w, start + i, &hpos, &vpos,
+					      &x, &y, Qnil))
+			{
+			  struct glyph_row *row = MATRIX_ROW (w->current_matrix,
+							      vpos);
+			  struct glyph *glyph = row->glyphs[TEXT_AREA] + hpos;
+
+			  if (glyph->type == CHAR_GLYPH
+			      && !glyph->glyph_not_available_p)
+			    font = [NSFont fontWithFace:(FACE_FROM_ID
+							 (f, glyph->face_id))];
+			}
+
+		      if (font == nil)
 			font = [NSFont fontWithFace:(FACE_FROM_ID
-						     (f, glyph->face_id))];
+						     (f, DEFAULT_FACE_ID))];
+		      [attributedString addAttribute:NSFontAttributeName
+					       value:font
+					       range:(NSMakeRange (i, 1))];
 		    }
-
-		  if (font == nil)
-		    font = [NSFont fontWithFace:(FACE_FROM_ID
-						 (f, DEFAULT_FACE_ID))];
-		  [attributedString addAttribute:NSFontAttributeName value:font
-				    range:(NSMakeRange (i, 1))];
+		  [attributedString endEditing];
+		  result = attributedString;
 		}
-	      [attributedString endEditing];
-	      result = attributedString;
+	      xfree (characters);
 	    }
-	  xfree (characters);
 	}
     }
 
@@ -3999,6 +4072,7 @@ mac_create_frame_tool_bar (f)
     [NSString stringWithFormat:TOOLBAR_IDENTIFIER_FORMAT, f];
   NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:identifier];
   NSWindow *window = FRAME_MAC_WINDOW (f);
+  id delegate = [window delegate];
   NSButton *button;
 
   if (toolbar == nil)
@@ -4011,7 +4085,7 @@ mac_create_frame_tool_bar (f)
   [toolbar setAllowsUserCustomization:NO];
   [toolbar setAutosavesConfiguration:NO];
 #if USE_MAC_TOOLBAR
-  [toolbar setDelegate:[window delegate]];
+  [toolbar setDelegate:delegate];
 #endif
   [toolbar setVisible:NO];
 
@@ -4755,6 +4829,15 @@ mac_reposition_hourglass (f)
     return [super runModal];
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      __block NSInteger response;
+
+      [NSApp runTemporarilyWithBlock:^{
+	  response = [self runModal];
+	}];
+
+      return response;
+#else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
 	[NSInvocation invocationWithMethodSignature:signature];
@@ -4768,6 +4851,7 @@ mac_reposition_hourglass (f)
       [invocation getReturnValue:&response];
 
       return response;
+#endif
     }
 }
 
@@ -4780,6 +4864,15 @@ mac_reposition_hourglass (f)
     return [super runModalForDirectory:path file:filename];
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      __block NSInteger response;
+
+      [NSApp runTemporarilyWithBlock:^{
+	  response = [self runModalForDirectory:path file:filename];
+	}];
+
+      return response;
+#else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
 	[NSInvocation invocationWithMethodSignature:signature];
@@ -4795,6 +4888,7 @@ mac_reposition_hourglass (f)
       [invocation getReturnValue:&response];
 
       return response;
+#endif
     }
 }
 
@@ -4818,6 +4912,15 @@ mac_reposition_hourglass (f)
     return [super runModalForTypes:fileTypes];
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      __block NSInteger response;
+
+      [NSApp runTemporarilyWithBlock:^{
+	  response = [self runModalForTypes:fileTypes];
+	}];
+
+      return response;
+#else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
 	[NSInvocation invocationWithMethodSignature:signature];
@@ -4832,6 +4935,7 @@ mac_reposition_hourglass (f)
       [invocation getReturnValue:&response];
 
       return response;
+#endif
     }
 }
 
@@ -4847,6 +4951,16 @@ mac_reposition_hourglass (f)
 		  file:filename types:fileTypes];
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      __block NSInteger response;
+
+      [NSApp runTemporarilyWithBlock:^{
+	  response = [self runModalForDirectory:absoluteDirectoryPath
+					   file:filename types:fileTypes];
+	}];
+
+      return response;
+#else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
 	[NSInvocation invocationWithMethodSignature:signature];
@@ -4863,6 +4977,7 @@ mac_reposition_hourglass (f)
       [invocation getReturnValue:&response];
 
       return response;
+#endif
     }
 }
 
@@ -5125,9 +5240,23 @@ static void update_services_menu_types P_ ((void));
   firstResponder = [window firstResponder];
   if ([firstResponder isMemberOfClass:[EmacsView class]])
     {
-      [firstResponder keyDown:theEvent];
+      /* This condition is a workaround for the problem that
+	 Command-Control-D does not pop up dictionary on Mac OS X
+	 10.6.  */
+      if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5
+	  || !([theEvent keyCode] == 0x02 /* kVK_ANSI_D */
+	       && (([theEvent modifierFlags] & ANY_KEY_MODIFIER_FLAGS_MASK)
+		   == (NSCommandKeyMask | NSControlKeyMask))))
+	{
+	  /* Note: this is not necessary for binaries built on Mac OS
+	     X 10.5 because -[NSWindow sendEvent:] now sends keyDown:
+	     to the first responder even if the command-key modifier
+	     is set when it is not a key equivalent.  But we keep this
+	     for binary compatibility.  */
+	  [firstResponder keyDown:theEvent];
 
-      return YES;
+	  return YES;
+	}
     }
   else if ([theEvent type] == NSKeyDown)
     {
@@ -5177,7 +5306,7 @@ restore_show_help_function (old_show_help_function)
 
 - (void)menu:(NSMenu *)menu willHighlightItem:(NSMenuItem *)item
 {
-  id object = [item representedObject];
+  NSData *object = [item representedObject];
   Lisp_Object help;
 #if USE_QUICKDRAW
   GrafPtr port;
@@ -5185,7 +5314,7 @@ restore_show_help_function (old_show_help_function)
   int specpdl_count = SPECPDL_INDEX ();
 
   if (object)
-    [object getBytes:&help];
+    [object getBytes:&help length:(sizeof (Lisp_Object))];
   else
     help = Qnil;
 
@@ -5242,6 +5371,9 @@ restore_show_help_function (old_show_help_function)
     }
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      [NSApp runTemporarilyWithBlock:^{[self trackMenubar];}];
+#else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
 	[NSInvocation invocationWithMethodSignature:signature];
@@ -5250,6 +5382,7 @@ restore_show_help_function (old_show_help_function)
       [invocation setSelector:_cmd];
 
       [NSApp runTemporarilyWithInvocation:invocation];
+#endif
     }
 }
 
@@ -5435,25 +5568,33 @@ create_and_show_popup_menu (f, first_wv, x, y, for_click)
      int for_click;
 {
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Popup"];
-  NSWindow *window = FRAME_MAC_WINDOW (f);
   EmacsView *emacsView = FRAME_EMACS_VIEW (f);
-  NSPoint location = [emacsView convertPoint:(NSMakePoint (x, y)) toView:nil];
-  NSEvent *event;
   int specpdl_count = SPECPDL_INDEX ();
 
   [menu setAutoenablesItems:NO];
   [menu fillWithWidgetValue:first_wv->contents];
 
   record_unwind_protect (pop_down_menu, make_save_value (menu, 0));
-  event = [NSEvent mouseEventWithType:NSLeftMouseDown location:location
-		   modifierFlags:0 timestamp:0
-		   windowNumber:[window windowNumber]
-		   context:[NSGraphicsContext currentContext]
-		   eventNumber:0 clickCount:1 pressure:0];
   popup_activated_flag = 1;
-  [NSMenu popUpContextMenu:menu withEvent:event forView:emacsView];
-  popup_activated_flag = 0;
+  if ([menu respondsToSelector:
+	      @selector(popUpMenuPositioningItem:atLocation:inView:)])
+    [menu popUpMenuPositioningItem:nil atLocation:(NSMakePoint (x, y))
+			    inView:emacsView];
+  else
+    {
+      NSPoint location =
+	[emacsView convertPoint:(NSMakePoint (x, y)) toView:nil];
+      NSWindow *window = [emacsView window];
+      NSEvent *event =
+	[NSEvent mouseEventWithType:NSLeftMouseDown location:location
+		      modifierFlags:0 timestamp:0
+		       windowNumber:[window windowNumber]
+			    context:[NSGraphicsContext currentContext]
+			eventNumber:0 clickCount:1 pressure:0];
 
+      [NSMenu popUpContextMenu:menu withEvent:event forView:emacsView];
+    }
+  popup_activated_flag = 0;
   unbind_to (specpdl_count, Qnil);
 }
 
@@ -6788,6 +6929,15 @@ extern long do_applescript P_ ((Lisp_Object, Lisp_Object *));
     return do_applescript (script, result);
   else
     {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1060
+      __block long osaerror;
+
+      [NSApp runTemporarilyWithBlock:^{
+	  osaerror = do_applescript (script, result);
+	}];
+
+      return osaerror;
+#else
       NSMethodSignature *signature = [self methodSignatureForSelector:_cmd];
       NSInvocation *invocation =
 	[NSInvocation invocationWithMethodSignature:signature];
@@ -6803,6 +6953,7 @@ extern long do_applescript P_ ((Lisp_Object, Lisp_Object *));
       [invocation getReturnValue:&osaerror];
 
       return osaerror;
+#endif
     }
 }
 

@@ -1,3 +1,20 @@
+* emacs-22.3-appkit-1.7 (2009-09-05)
+
+** Fixed bugs
+
+*** Command-Control-D doesn't pop up dictionary on Mac OS X 10.6.
+
+*** Iconified frames aren't considered visible.
+Reported by Benjamin Riefenstahl.
+
+*** Can't make iconified frames invisible.
+
+** Improvement
+
+*** Fall back on mac-system-coding-system if script and language
+information is not available in text input events.
+
+
 * emacs-22.3-appkit-1.6 (2009-08-29)
 
 ** Fixed bugs
