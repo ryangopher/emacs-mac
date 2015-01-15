@@ -374,7 +374,7 @@ mac_aelist_to_lisp (desc_list)
 	    desc_type = EndianU32_NtoB (desc_type);
 	    elem = Fcons (make_unibyte_string ((char *) &desc_type, 4), elem);
 	    break;
-	}
+	  }
 
       if (err == noErr || desc_list->descriptorType == typeAEList)
 	{
@@ -647,8 +647,11 @@ mac_coerce_file_name_ptr (type_code, data_ptr, data_size,
       CFDataRef data = NULL;
 
       if (type_code == typeFileURL)
-	url = CFURLCreateWithBytes (NULL, data_ptr, data_size,
-				    kCFStringEncodingUTF8, NULL);
+	{
+	  url = CFURLCreateWithBytes (NULL, data_ptr, data_size,
+				      kCFStringEncodingUTF8, NULL);
+	  err = noErr;
+	}
       else
 	{
 	  AEDesc desc;
@@ -955,14 +958,31 @@ cfstring_create_with_utf8_cstring (c_str)
 }
 
 
+/* Lisp string containing a UTF-8 byte sequence to CFString.  Unlike
+   cfstring_create_with_utf8_cstring, this function preserves NUL
+   characters.  */
+
+CFStringRef
+cfstring_create_with_string_noencode (s)
+     Lisp_Object s;
+{
+  CFStringRef string = CFStringCreateWithBytes (NULL, SDATA (s), SBYTES (s),
+						kCFStringEncodingUTF8, false);
+
+  if (string == NULL)
+    /* Failed to interpret as UTF 8.  Fall back on Mac Roman.  */
+    string = CFStringCreateWithBytes (NULL, SDATA (s), SBYTES (s),
+				      kCFStringEncodingMacRoman, false);
+
+  return string;
+}
+
 /* Lisp string to CFString.  */
 
 CFStringRef
 cfstring_create_with_string (s)
      Lisp_Object s;
 {
-  CFStringRef string = NULL;
-
   if (STRING_MULTIBYTE (s))
     {
       char *p, *end = SDATA (s) + SBYTES (s);
@@ -973,16 +993,11 @@ cfstring_create_with_string (s)
 	    s = ENCODE_UTF_8 (s);
 	    break;
 	  }
-      string = CFStringCreateWithBytes (NULL, SDATA (s), SBYTES (s),
-					kCFStringEncodingUTF8, false);
+      return cfstring_create_with_string_noencode (s);
     }
-
-  if (string == NULL)
-    /* Failed to interpret as UTF 8.  Fall back on Mac Roman.  */
-    string = CFStringCreateWithBytes (NULL, SDATA (s), SBYTES (s),
-				      kCFStringEncodingMacRoman, false);
-
-  return string;
+  else
+    return CFStringCreateWithBytes (NULL, SDATA (s), SBYTES (s),
+				    kCFStringEncodingMacRoman, false);
 }
 
 
@@ -1009,21 +1024,27 @@ cfstring_to_lisp_nodecode (string)
      CFStringRef string;
 {
   Lisp_Object result = Qnil;
+  CFDataRef data;
   const char *s = CFStringGetCStringPtr (string, kCFStringEncodingUTF8);
 
   if (s)
-    result = make_unibyte_string (s, strlen (s));
-  else
     {
-      CFDataRef data =
-	CFStringCreateExternalRepresentation (NULL, string,
-					      kCFStringEncodingUTF8, '?');
+      CFIndex i, length = CFStringGetLength (string);
 
-      if (data)
-	{
-	  result = cfdata_to_lisp (data);
-	  CFRelease (data);
-	}
+      for (i = 0; i < length; i++)
+	if (CFStringGetCharacterAtIndex (string, i) == 0)
+	  break;
+
+      if (i == length)
+	return make_unibyte_string (s, strlen (s));
+    }
+
+  data = CFStringCreateExternalRepresentation (NULL, string,
+					       kCFStringEncodingUTF8, '?');
+  if (data)
+    {
+      result = cfdata_to_lisp (data);
+      CFRelease (data);
     }
 
   return result;
@@ -5258,6 +5279,37 @@ static pid_t mac_emacs_pid;
 
 static int wakeup_fds[2];
 
+static int
+read_all_from_nonblocking_fd (fd)
+     int fd;
+{
+  int rtnval;
+  char buf[64];
+
+  do
+    {
+      rtnval = read (fd, buf, sizeof (buf));
+    }
+  while (rtnval > 0 || (rtnval < 0 && errno == EINTR));
+
+  return rtnval;
+}
+
+static int
+write_one_byte_to_fd (fd)
+     int fd;
+{
+  int rtnval;
+
+  do
+    {
+      rtnval = write (fd, "", 1);
+    }
+  while (rtnval == 0 || (rtnval < 0 && errno == EINTR));
+
+  return rtnval;
+}
+
 static void
 wakeup_callback (s, type, address, data, info)
      CFSocketRef s;
@@ -5266,10 +5318,7 @@ wakeup_callback (s, type, address, data, info)
      const void *data;
      void *info;
 {
-  char buf[64];
-
-  while (emacs_read (CFSocketGetNative (s), buf, sizeof (buf)) > 0)
-    ;
+  read_all_from_nonblocking_fd (CFSocketGetNative (s));
 }
 
 int
@@ -5306,9 +5355,12 @@ init_wakeup_fds ()
   return 0;
 }
 
-void mac_wakeup_from_run_loop_run_once ()
+void
+mac_wakeup_from_run_loop_run_once ()
 {
-  emacs_write (wakeup_fds[1], "", 1);
+  /* This function may be called from a signal hander, so only
+     async-signal safe functions can be used here.  */
+  write_one_byte_to_fd (wakeup_fds[1]);
 }
 
 static void
@@ -5627,11 +5679,8 @@ mac_service_provider_registered_p ()
       CFStringRef identifier = CFBundleGetIdentifier (bundle);
 
       if (identifier)
-	{
-	  CFStringGetCString (identifier, name, sizeof (name),
-			      kCFStringEncodingUTF8);
-	  CFRelease (identifier);
-	}
+	CFStringGetCString (identifier, name, sizeof (name),
+			    kCFStringEncodingUTF8);
     }
   /* Mac OS X 10.1 doesn't have strlcat.  */
   strncat (name, ".ServiceProvider", sizeof (name) - strlen (name) - 1);
@@ -5687,6 +5736,7 @@ init_mac_osx_environment ()
 
   cf_app_bundle_pathname = CFURLCopyFileSystemPath (bundleURL,
 						    kCFURLPOSIXPathStyle);
+  CFRelease (bundleURL);
   app_bundle_pathname_len = CFStringGetLength (cf_app_bundle_pathname);
   app_bundle_pathname = (char *) alloca (app_bundle_pathname_len + 1);
 

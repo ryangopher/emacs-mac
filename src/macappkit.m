@@ -113,6 +113,15 @@ NSRectToCGRect (nsrect)
   return [string autorelease];
 }
 
+/* Return a string created from the unibyte Lisp string in UTF 8.  */
+
++ (id)stringWithUTF8LispString:(Lisp_Object)lispString
+{
+  id string = (NSString *) cfstring_create_with_string_noencode (lispString);
+
+  return [string autorelease];
+}
+
 /* Like -[NSString stringWithUTF8String:], but fall back on Mac-Roman
    if BYTES cannot be interpreted as UTF-8 bytes and FLAG is YES. */
 
@@ -992,6 +1001,81 @@ emacs_windows_need_display_p (with_resize_control_p)
     }
 }
 
+/* Work around conflicting Cocoa's text system key bindings.  */
+
+- (BOOL)conflictingKeyBindingsDisabled
+{
+  return conflictingKeyBindingsDisabled;
+}
+
+- (void)setConflictingKeyBindingsDisabled:(BOOL)flag
+{
+  id keyBindingManager;
+
+  if (flag == conflictingKeyBindingsDisabled)
+    return;
+
+  keyBindingManager = [(NSClassFromString (@"NSKeyBindingManager"))
+			performSelector:@selector(sharedKeyBindingManager)];
+  if (flag)
+    {
+      /* Disable the effect of NSQuotedKeystrokeBinding (C-q by
+	 default) and NSRepeatCountBinding (none by default but user
+	 may set it to C-u).  */
+      [keyBindingManager performSelector:@selector(setQuoteBinding:)
+			      withObject:nil];
+      [keyBindingManager performSelector:@selector(setArgumentBinding:)
+			      withObject:nil];
+      /* Remove key bindings for writing direction commands as they
+	 are intercepted by NSTextInputContext on Mac OS X 10.6.  */
+      if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5))
+	{
+	  if (keyBindingsWithConflicts == nil)
+	    {
+	      NSArray *writingDirectionCommands =
+		[NSArray arrayWithObjects:@"insertRightToLeftSlash:",
+			 @"makeBaseWritingDirectionNatural:",
+			 @"makeBaseWritingDirectionLeftToRight:",
+			 @"makeBaseWritingDirectionRightToLeft:",
+			 @"makeTextWritingDirectionNatural:",
+			 @"makeTextWritingDirectionLeftToRight:",
+			 @"makeTextWritingDirectionRightToLeft:", nil];
+	      NSMutableDictionary *dictionary;
+	      NSEnumerator *enumerator;
+	      NSString *command;
+
+	      keyBindingsWithConflicts =
+		[[keyBindingManager dictionary] retain];
+	      dictionary = [keyBindingsWithConflicts mutableCopy];
+	      enumerator = [writingDirectionCommands objectEnumerator];
+	      while ((command = [enumerator nextObject]) != nil)
+		[dictionary removeObjectsForKeys:[dictionary
+						   allKeysForObject:command]];
+	      keyBindingsWithoutConflicts = dictionary;
+	    }
+	  [keyBindingManager setDictionary:keyBindingsWithoutConflicts];
+	}
+    }
+  else
+    {
+      NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
+
+      [keyBindingManager
+	performSelector:@selector(setQuoteBinding:)
+	     withObject:[userDefaults
+			  stringForKey:@"NSQuotedKeystrokeBinding"]];
+      [keyBindingManager
+	performSelector:@selector(setArgumentBinding:)
+	     withObject:[userDefaults
+			  stringForKey:@"NSRepeatCountBinding"]];
+      if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5))
+	if (keyBindingsWithConflicts)
+	  [keyBindingManager setDictionary:keyBindingsWithConflicts];
+    }
+
+  conflictingKeyBindingsDisabled = flag;
+}
+
 /* Some key bindings in mac_apple_event_map are regarded as methods in
    the application delegate.  */
 
@@ -1243,6 +1327,8 @@ static OSStatus mac_create_frame_tool_bar P_ ((FRAME_PTR f));
   mac_focus_changed (activeFlag, FRAME_MAC_DISPLAY_INFO (f), f, &inev);
   if (inev.kind != NO_EVENT)
     [[NSApp delegate] storeEvent:&inev];
+
+  [[NSApp delegate] setConflictingKeyBindingsDisabled:YES];
 }
 
 - (void)windowDidResignKey:(NSNotification *)aNotification
@@ -1255,6 +1341,8 @@ static OSStatus mac_create_frame_tool_bar P_ ((FRAME_PTR f));
   mac_focus_changed (0, FRAME_MAC_DISPLAY_INFO (f), f, &inev);
   if (inev.kind != NO_EVENT)
     [[NSApp delegate] storeEvent:&inev];
+
+  [[NSApp delegate] setConflictingKeyBindingsDisabled:NO];
 }
 
 - (void)windowDidBecomeMain:(NSNotification *)aNotification
@@ -2115,7 +2203,7 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
   struct frame *f = [self emacsFrame];
   struct mac_display_info *dpyinfo = FRAME_MAC_DISPLAY_INFO (f);
   NSPoint point = [self convertPoint:[theEvent locationInWindow] fromView:nil];
-  int tool_bar_p, down_p;
+  int tool_bar_p = 0, down_p;
 
   down_p = (NSEventMaskFromType ([theEvent type]) & ANY_MOUSE_DOWN_EVENT_MASK);
 
@@ -2241,14 +2329,18 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
   Point mouse_pos;
   static Lisp_Object last_window;
 
-  previous_help_echo_string = help_echo_string;
-  help_echo_string = Qnil;
-
   if (dpyinfo->grabbed && last_mouse_frame
       && FRAME_LIVE_P (last_mouse_frame))
     f = last_mouse_frame;
   else
-    f = [self emacsFrame];
+    {
+      f = [self emacsFrame];
+      if (![[self window] isKeyWindow])
+	return;
+    }
+
+  previous_help_echo_string = help_echo_string;
+  help_echo_string = Qnil;
 
   if (dpyinfo->mouse_face_hidden)
     {
@@ -2335,12 +2427,7 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
   mapped_modifiers = mac_mapped_modifiers (modifiers, [theEvent keyCode]);
 
   if (!(mapped_modifiers
-	& ~(mac_pass_control_to_system ? controlKey : 0))
-      /* This is a workaround for the problem that Control-/ is not
-	 recognized on Mac OS X 10.6.  */
-      && !(!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5)
-	   && [theEvent keyCode] == 0x2C /* kVK_ANSI_Slash */
-	   && modifiers == controlKey))
+	& ~(mac_pass_control_to_system ? controlKey : 0)))
     {
       keyEventsInterpreted = YES;
       rawKeyEvent = theEvent;
@@ -2369,24 +2456,6 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
 		[theEvent timestamp] * 1000, &inputEvent);
 
   [self sendAction:action to:target];
-}
-
-- (void)interpretKeyEvents:(NSArray *)eventArray
-{
-  static id keyBindingManager;
-
-  if (keyBindingManager == nil)
-    keyBindingManager = [(NSClassFromString (@"NSKeyBindingManager"))
-			  performSelector:@selector(sharedKeyBindingManager)];
-
-  /* Disable the effect of NSQuotedKeystrokeBinding (C-q by default)
-     and NSRepeatCountBinding (none by default but user may set it to
-     C-u).  Should they be restored?  */
-  [keyBindingManager performSelector:@selector(setQuoteBinding:)
-		     withObject:@""];
-  [keyBindingManager performSelector:@selector(setArgumentBinding:)
-		     withObject:@""];
-  [super interpretKeyEvents:eventArray];
 }
 
 static OSStatus
@@ -5975,15 +6044,13 @@ extern Lisp_Object Vselection_converter_alist;
   else if ([dataType isEqualToString:NSStringPboardType]
 	   || [dataType isEqualToString:NSTabularTextPboardType])
     {
-      NSString *string = [NSString stringWithUTF8String:(SDATA (lispObject))
-				   fallback:YES];
+      NSString *string = [NSString stringWithUTF8LispString:lispObject];
 
       result = [self setString:string forType:dataType];
     }
   else if ([dataType isEqualToString:NSURLPboardType])
     {
-      NSString *string = [NSString stringWithUTF8String:(SDATA (lispObject))
-				   fallback:YES];
+      NSString *string = [NSString stringWithUTF8LispString:lispObject];
       NSURL *url = [NSURL URLWithString:string];
 
       if (url)
@@ -6870,8 +6937,7 @@ handle_action_invocation (invocation)
 	    id value;
 	    Lisp_Object obj;
 
-	    keyPath = [NSString stringWithUTF8String:(SDATA (XCAR (rest)))
-				fallback:YES];
+	    keyPath = [NSString stringWithUTF8LispString:(XCAR (rest))];
 
 	    NS_DURING
 	      value = [sender valueForKeyPath:keyPath];

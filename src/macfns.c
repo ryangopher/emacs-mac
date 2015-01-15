@@ -1762,32 +1762,33 @@ x_set_name_internal (f, name)
 {
   if (FRAME_MAC_WINDOW (f))
     {
-      if (STRING_MULTIBYTE (name))
 #if TARGET_API_MAC_CARBON
-	name = ENCODE_UTF_8 (name);
+      CFStringRef window_title;
 #else
+      if (STRING_MULTIBYTE (name))
 	name = ENCODE_SYSTEM (name);
 #endif
 
       BLOCK_INPUT;
 
-      {
 #if TARGET_API_MAC_CARBON
-	CFStringRef windowTitle =
-	  cfstring_create_with_utf8_cstring (SDATA (name));
+      window_title = cfstring_create_with_string (name);
 
-	mac_set_window_title (FRAME_MAC_WINDOW (f), windowTitle);
-	CFRelease (windowTitle);
+      if (window_title)
+	{
+	  mac_set_window_title (FRAME_MAC_WINDOW (f), window_title);
+	  CFRelease (window_title);
+	}
 #else
-	Str255 windowTitle;
-	if (strlen (SDATA (name)) < 255)
-	  {
-	    strcpy (windowTitle, SDATA (name));
-	    c2pstr (windowTitle);
-	    SetWTitle (FRAME_MAC_WINDOW (f), windowTitle);
-	  }
+      if (strlen (SDATA (name)) < 255)
+	{
+	  Str255 window_title;
+
+	  strcpy (window_title, SDATA (name));
+	  c2pstr (window_title);
+	  SetWTitle (FRAME_MAC_WINDOW (f), window_title);
+	}
 #endif
-      }
 
       UNBLOCK_INPUT;
     }

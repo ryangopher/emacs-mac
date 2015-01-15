@@ -1,3 +1,15 @@
+* emacs-22.3-appkit-1.8 (2009-09-27)
+
+** Fixed bugs
+
+*** Conversion between Lisp and NSPasteboard strings doesn't preserve
+NUL characters.
+
+*** Mouse face reacts even while tracking Dock menus or Stacks.
+
+*** Control-Q does not work as the quote binding in file dialogs.
+
+
 * emacs-22.3-appkit-1.7 (2009-09-05)
 
 ** Fixed bugs
@@ -9,7 +21,7 @@ Reported by Benjamin Riefenstahl.
 
 *** Can't make iconified frames invisible.
 
-** Improvement
+** Improvements
 
 *** Fall back on mac-system-coding-system if script and language
 information is not available in text input events.
@@ -24,7 +36,7 @@ information is not available in text input events.
 *** Mach port right leaks due to the previous change for the warning
 "CFMessagePort: bootstrap_register(): failed".
 
-** Improvement
+** Improvements
 
 *** File dialogs can be closed with C-g on Mac OS X 10.5 and later.
 
