@@ -80,7 +80,7 @@ MA 02110-1301, USA.
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Emacs/New Buffer Containing Selection</string>
+				<string>Emacs/New Emacs Buffer Containing Selection</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>open-selection</string>
@@ -99,12 +99,17 @@ MA 02110-1301, USA.
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Emacs/Open Selected File</string>
+				<string>Emacs/Open Selected File in Emacs</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>open-file</string>
 			<key>NSPortName</key>
 			<string>Emacs</string>
+			<key>NSRequiredContext</key>
+			<dict>
+				<key>NSTextContent</key>
+				<string>FilePath</string>
+			</dict>
 			<key>NSReturnTypes</key>
 			<array/>
 			<key>NSSendTypes</key>
@@ -118,7 +123,7 @@ MA 02110-1301, USA.
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Emacs/Send Selection</string>
+				<string>Emacs/New Email With Selection</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>mail-selection</string>
@@ -137,7 +142,7 @@ MA 02110-1301, USA.
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Emacs/Send To</string>
+				<string>Emacs/New Email To Address</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>mail-to</string>

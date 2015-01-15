@@ -38,10 +38,13 @@ typedef unsigned int NSUInteger;
 #endif
 
 #if MAC_OS_X_VERSION_MAX_ALLOWED < 1060
-@protocol NSApplicationDelegate <NSObject> @end
-@protocol NSWindowDelegate <NSObject> @end
-@protocol NSToolbarDelegate <NSObject> @end
-@protocol NSMenuDelegate <NSObject> @end
+/* If we add `<NSObject>' here as documented, the 64-bit binary
+   compiled on Mac OS X 10.5 fails in startup at -[EmacsController
+   methodSignatureForSelector:] when executed on Mac OS X 10.6.  */
+@protocol NSApplicationDelegate @end
+@protocol NSWindowDelegate @end
+@protocol NSToolbarDelegate @end
+@protocol NSMenuDelegate @end
 #endif
 
 #if MAC_OS_X_VERSION_MAX_ALLOWED < 1050
@@ -224,6 +227,12 @@ typedef unsigned int NSUInteger;
 
   /* Saved marked text passed by setMarkedText:selectedRange:.  */
   id markedText;
+
+  /* Position in the last normal (non-momentum) wheel event.  */
+  NSPoint savedWheelPoint;
+
+  /* Modifers in the last normal (non-momentum) wheel event.  */
+  int savedWheelModifiers;
 }
 - (id)target;
 - (SEL)action;
@@ -231,7 +240,7 @@ typedef unsigned int NSUInteger;
 - (void)setAction:(SEL)aSelector;
 - (BOOL)sendAction:(SEL)theAction to:(id)theTarget;
 - (struct input_event *)inputEvent;
-- (void)viewFrameDidChange:(NSNotification *)aNotification;
+- (void)viewFrameDidChange:(NSNotification *)notification;
 @end
 
 /* Class for scroller that doesn't do modal mouse tracking.  */
@@ -260,9 +269,11 @@ typedef unsigned int NSUInteger;
      relative to the knob slot.  */
   CGFloat knobMinEdgeInSlot;
 }
++ (void)updateBehavioralParameters;
 - (BOOL)dragUpdatesFloatValue;
-- (NSTimeInterval)firstDelay;
-- (NSTimeInterval)continuousDelay;
+- (NSTimeInterval)buttonDelay;
+- (NSTimeInterval)buttonPeriod;
+- (BOOL)pagingBehavior;
 @end
 
 /* Just for avoiding warnings about undocumented methods in NSScroller.  */
@@ -347,7 +358,7 @@ typedef unsigned int NSUInteger;
 @end
 
 @interface EmacsController (FontPanel)
-- (void)fontPanelWillClose:(NSNotification *)aNotification;
+- (void)fontPanelWillClose:(NSNotification *)notification;
 @end
 
 @interface EmacsFrameController (FontPanel)
@@ -372,6 +383,11 @@ typedef unsigned int NSUInteger;
 
 @interface NSEvent (Undocumented)
 - (EventRef)_eventRef;
+- (BOOL)_continuousScroll;
+- (NSInteger)_scrollPhase;
+- (CGFloat)deviceDeltaX;
+- (CGFloat)deviceDeltaY;
+- (CGFloat)deviceDeltaZ;
 @end
 
 @interface EmacsController (Menu) <NSMenuDelegate>

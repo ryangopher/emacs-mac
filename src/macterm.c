@@ -183,6 +183,9 @@ int volatile input_signal_count;
 int input_signal_count;
 #endif
 
+/* Non-nil means update doesn't reset vscroll.  */
+int mac_redisplay_dont_reset_vscroll;
+
 extern Lisp_Object Vsystem_name;
 
 extern Lisp_Object Qeql;
@@ -2230,13 +2233,12 @@ x_draw_fringe_bitmap (w, row, p)
   struct frame *f = XFRAME (WINDOW_FRAME (w));
   Display *display = FRAME_MAC_DISPLAY (f);
   struct face *face = p->face;
-  int rowY;
   int overlay_p = p->overlay_p;
 
 #ifdef MAC_OSX
   if (!overlay_p)
     {
-      int bx = p->bx, by = p->by, nx = p->nx, ny = p->ny;
+      int bx = p->bx, nx = p->nx;
 
 #if 0  /* MAC_TODO: stipple */
       /* In case the same realized face is used for fringes and
@@ -2271,13 +2273,8 @@ x_draw_fringe_bitmap (w, row, p)
 		{
 		  /* Bitmap fills the fringe and we need background
 		     extension.  */
-		  int header_line_height = WINDOW_HEADER_LINE_HEIGHT (w);
-
 		  bx = p->x;
 		  nx = p->wd;
-		  by = WINDOW_TO_FRAME_PIXEL_Y (w, max (header_line_height,
-							row->y));
-		  ny = row->visible_height;
 		}
 
 	      if (bx >= 0)
@@ -2295,7 +2292,7 @@ x_draw_fringe_bitmap (w, row, p)
 
       if (bx >= 0)
 	{
-	  mac_erase_rectangle (f, face->gc, bx, by, nx, ny);
+	  mac_erase_rectangle (f, face->gc, bx, p->by, nx, p->ny);
 	  /* The fringe background has already been filled.  */
 	  overlay_p = 1;
 	}
@@ -2308,21 +2305,7 @@ x_draw_fringe_bitmap (w, row, p)
 #endif	/* MAC_OSX */
 
   /* Must clip because of partially visible lines.  */
-  rowY = WINDOW_TO_FRAME_PIXEL_Y (w, row->y);
-  if (p->y < rowY)
-    {
-      /* Adjust position of "bottom aligned" bitmap on partially
-	 visible last row.  */
-      int oldY = row->y;
-      int oldVH = row->visible_height;
-      row->visible_height = p->h;
-      row->y -= rowY - p->y;
-      x_clip_to_row (w, row, -1, face->gc);
-      row->y = oldY;
-      row->visible_height = oldVH;
-    }
-  else
-    x_clip_to_row (w, row, -1, face->gc);
+  x_clip_to_row (w, row, -1, face->gc);
 
 #ifndef MAC_OSX
   if (p->bx >= 0 && !p->overlay_p)
@@ -9565,8 +9548,8 @@ mac_term_init (display_name, xrm_option, resource_name)
 
 #ifdef MAC_OSX
   dpyinfo->mac_id_name
-    = (char *) xmalloc (SCHARS (Vinvocation_name)
-			+ SCHARS (Vsystem_name)
+    = (char *) xmalloc (SBYTES (Vinvocation_name)
+			+ SBYTES (Vsystem_name)
 			+ 2);
   sprintf (dpyinfo->mac_id_name, "%s@%s",
 	   SDATA (Vinvocation_name), SDATA (Vsystem_name));
@@ -9920,6 +9903,10 @@ baseline level.  The default value is nil.  */);
 
   staticpro (&last_mouse_motion_frame);
   last_mouse_motion_frame = Qnil;
+
+  DEFVAR_BOOL ("mac-redisplay-dont-reset-vscroll", &mac_redisplay_dont_reset_vscroll,
+	       doc: /* Non-nil means update doesn't reset vscroll.  */);
+  mac_redisplay_dont_reset_vscroll = 0;
 
 /* Variables to configure modifier key assignment.  */
 

@@ -3854,6 +3854,25 @@ x_create_tip_frame (dpyinfo, parms, text)
     Fmodify_frame_parameters (frame, Fcons (Fcons (intern ("tooltip"), Qt),
 					    Qnil));
 
+  /* FIXME - can this be done in a similar way to normal frames?
+     http://lists.gnu.org/archive/html/emacs-devel/2007-10/msg00641.html */
+
+  /* Set the `display-type' frame parameter before setting up faces. */
+  {
+    Lisp_Object disptype;
+
+    if (FRAME_MAC_DISPLAY_INFO (f)->n_planes == 1)
+      disptype = intern ("mono");
+    else if (!FRAME_MAC_DISPLAY_INFO (f)->color_p)
+      disptype = intern ("grayscale");
+    else
+      disptype = intern ("color");
+
+    if (NILP (Fframe_parameter (frame, Qdisplay_type)))
+      Fmodify_frame_parameters (frame, Fcons (Fcons (Qdisplay_type, disptype),
+                                              Qnil));
+  }
+
   /* Set up faces after all frame parameters are known.  This call
      also merges in face attributes specified for new frames.
 
@@ -4128,15 +4147,15 @@ Text larger than the specified size is clipped.  */)
       /* Let the row go over the full width of the frame.  */
       row->full_width_p = 1;
 
+      row_width = row->pixel_width;
       /* There's a glyph at the end of rows that is used to place
 	 the cursor there.  Don't include the width of this glyph.  */
       if (row->used[TEXT_AREA])
 	{
 	  last = &row->glyphs[TEXT_AREA][row->used[TEXT_AREA] - 1];
-	  row_width = row->pixel_width - last->pixel_width;
+	  if (INTEGERP (last->object))
+	    row_width -= last->pixel_width;
 	}
-      else
-	row_width = row->pixel_width;
 
       height += row->height;
       width = max (width, row_width);

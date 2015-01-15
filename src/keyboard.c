@@ -5849,10 +5849,17 @@ make_lispy_event (event)
 	  last_mouse_y = XINT (event->y);
 	}
 
-	if (event->modifiers & (double_modifier | triple_modifier))
+	if (event->modifiers & (double_modifier | triple_modifier)
+#ifdef HAVE_CARBON
+	    || !NILP (event->arg)
+#endif
+	    )
 	  return Fcons (head,
 			Fcons (position,
 			       Fcons (make_number (double_click_count),
+#ifdef HAVE_CARBON
+				      !NILP (event->arg) ? Fcons (event->arg, Qnil) :
+#endif
 				      Qnil)));
 	else
 	  return Fcons (head,

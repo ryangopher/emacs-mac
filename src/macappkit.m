@@ -711,7 +711,7 @@ extern UInt32 mac_mapped_modifiers P_ ((UInt32, UInt32));
 
 /* Delegete Methods  */
 
-- (void)applicationWillFinishLaunching:(NSNotification *)aNotification
+- (void)applicationWillFinishLaunching:(NSNotification *)notification
 {
   [EmacsPosingWindow setup];
   [NSFontManager setFontPanelFactory:[EmacsFontPanel class]];
@@ -720,7 +720,7 @@ extern UInt32 mac_mapped_modifiers P_ ((UInt32, UInt32));
   init_apple_event_handler ();
 }
 
-- (void)applicationDidFinishLaunching:(NSNotification *)aNotification
+- (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
   /* Try to suppress the warning "CFMessagePort: bootstrap_register():
      failed" displayed by the second instance of Emacs.  Strictly
@@ -1063,35 +1063,36 @@ emacs_windows_need_display_p (with_resize_control_p)
 			      withObject:nil];
       [keyBindingManager performSelector:@selector(setArgumentBinding:)
 			      withObject:nil];
-      /* Remove key bindings for writing direction commands as they
-	 are intercepted by NSTextInputContext on Mac OS X 10.6.  */
-      if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5))
+      if (keyBindingsWithConflicts == nil)
 	{
-	  if (keyBindingsWithConflicts == nil)
-	    {
-	      NSArray *writingDirectionCommands =
-		[NSArray arrayWithObjects:@"insertRightToLeftSlash:",
-			 @"makeBaseWritingDirectionNatural:",
-			 @"makeBaseWritingDirectionLeftToRight:",
-			 @"makeBaseWritingDirectionRightToLeft:",
-			 @"makeTextWritingDirectionNatural:",
-			 @"makeTextWritingDirectionLeftToRight:",
-			 @"makeTextWritingDirectionRightToLeft:", nil];
-	      NSMutableDictionary *dictionary;
-	      NSEnumerator *enumerator;
-	      NSString *command;
+	  NSArray *writingDirectionCommands =
+	    [NSArray arrayWithObjects:@"insertRightToLeftSlash:",
+		     @"makeBaseWritingDirectionNatural:",
+		     @"makeBaseWritingDirectionLeftToRight:",
+		     @"makeBaseWritingDirectionRightToLeft:",
+		     @"makeTextWritingDirectionNatural:",
+		     @"makeTextWritingDirectionLeftToRight:",
+		     @"makeTextWritingDirectionRightToLeft:", nil];
+	  NSMutableDictionary *dictionary;
+	  NSEnumerator *enumerator;
+	  NSString *key;
 
-	      keyBindingsWithConflicts =
-		[[keyBindingManager dictionary] retain];
-	      dictionary = [keyBindingsWithConflicts mutableCopy];
-	      enumerator = [writingDirectionCommands objectEnumerator];
-	      while ((command = [enumerator nextObject]) != nil)
-		[dictionary removeObjectsForKeys:[dictionary
-						   allKeysForObject:command]];
-	      keyBindingsWithoutConflicts = dictionary;
+	  /* Replace entries for prefix keys and writing direction
+	     commands with dummy ones.  */
+	  keyBindingsWithConflicts = [[keyBindingManager dictionary] retain];
+	  dictionary = [keyBindingsWithConflicts mutableCopy];
+	  enumerator = [keyBindingsWithConflicts keyEnumerator];
+	  while ((key = [enumerator nextObject]) != nil)
+	    {
+	      id object = [keyBindingsWithConflicts objectForKey:key];
+
+	      if (![object isKindOfClass:[NSString class]]
+		  || [writingDirectionCommands containsObject:object])
+		[dictionary setObject:@"dummy:" forKey:key];
 	    }
-	  [keyBindingManager setDictionary:keyBindingsWithoutConflicts];
+	  keyBindingsWithoutConflicts = dictionary;
 	}
+      [keyBindingManager setDictionary:keyBindingsWithoutConflicts];
     }
   else
     {
@@ -1105,9 +1106,8 @@ emacs_windows_need_display_p (with_resize_control_p)
 	performSelector:@selector(setArgumentBinding:)
 	     withObject:[userDefaults
 			  stringForKey:@"NSRepeatCountBinding"]];
-      if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_5))
-	if (keyBindingsWithConflicts)
-	  [keyBindingManager setDictionary:keyBindingsWithConflicts];
+      if (keyBindingsWithConflicts)
+	[keyBindingManager setDictionary:keyBindingsWithConflicts];
     }
 
   conflictingKeyBindingsDisabled = flag;
@@ -1315,7 +1315,7 @@ static void mac_note_frame_leave P_ ((struct frame *));
     }
 }
 
-- (BOOL)needsOrderFrontOnUnhide;
+- (BOOL)needsOrderFrontOnUnhide
 {
   return needsOrderFrontOnUnhide;
 }
@@ -1325,7 +1325,7 @@ static void mac_note_frame_leave P_ ((struct frame *));
   needsOrderFrontOnUnhide = flag;
 }
 
-- (void)applicationDidUnhide:(NSNotification *)aNotification
+- (void)applicationDidUnhide:(NSNotification *)notification
 {
   if (needsOrderFrontOnUnhide)
     {
@@ -1356,7 +1356,7 @@ static void mac_note_frame_leave P_ ((struct frame *));
 
 /* Delegete Methods.  */
 
-- (void)windowDidBecomeKey:(NSNotification *)aNotification
+- (void)windowDidBecomeKey:(NSNotification *)notification
 {
   struct frame *f = emacsFrame;
   struct input_event inev;
@@ -1372,7 +1372,7 @@ static void mac_note_frame_leave P_ ((struct frame *));
   [[NSApp delegate] setConflictingKeyBindingsDisabled:YES];
 }
 
-- (void)windowDidResignKey:(NSNotification *)aNotification
+- (void)windowDidResignKey:(NSNotification *)notification
 {
   struct frame *f = emacsFrame;
   struct input_event inev;
@@ -1388,12 +1388,12 @@ static void mac_note_frame_leave P_ ((struct frame *));
   [[NSApp delegate] setConflictingKeyBindingsDisabled:NO];
 }
 
-- (void)windowDidBecomeMain:(NSNotification *)aNotification
+- (void)windowDidBecomeMain:(NSNotification *)notification
 {
   mac_restore_keyboard_input_source ();
 }
 
-- (void)windowDidResignMain:(NSNotification *)aNotification
+- (void)windowDidResignMain:(NSNotification *)notification
 {
   struct frame *f = emacsFrame;
   EmacsView *emacsView = FRAME_EMACS_VIEW (f);
@@ -1403,14 +1403,14 @@ static void mac_note_frame_leave P_ ((struct frame *));
   mac_save_keyboard_input_source ();
 }
 
-- (void)windowDidMove:(NSNotification *)aNotification
+- (void)windowDidMove:(NSNotification *)notification
 {
   struct frame *f = emacsFrame;
 
   mac_handle_origin_change (f);
 }
 
-- (void)windowDidResize:(NSNotification *)aNotification
+- (void)windowDidResize:(NSNotification *)notification
 {
   struct frame *f = emacsFrame;
   int x, y;
@@ -1432,16 +1432,16 @@ static void mac_note_frame_leave P_ ((struct frame *));
   return NO;
 }
 
-- (void)windowWillClose:(NSNotification *)aNotification
+- (void)windowWillClose:(NSNotification *)notification
 {
-  NSWindow *window = [aNotification object];
+  NSWindow *window = [notification object];
 
   [window setDelegate:nil];
   [self release];
 }
 
 #if USE_MAC_TOOLBAR
-- (void)windowWillMove:(NSNotification *)aNotification
+- (void)windowWillMove:(NSNotification *)notification
 {
   struct frame *f = emacsFrame;
 
@@ -1457,7 +1457,7 @@ static void mac_note_frame_leave P_ ((struct frame *));
   BOOL leftMouseDragged = ([currentEvent type] == NSLeftMouseDragged);
   XSizeHints *size_hints = FRAME_SIZE_HINTS (f);
   EmacsView *emacsView = FRAME_EMACS_VIEW (f);
-  NSRect windowFrame, emacsViewFrame;
+  NSRect windowFrame, emacsViewBounds;
   NSSize emacsViewSizeInPixels, emacsViewSize;
   CGFloat dw, dh;
 
@@ -1472,8 +1472,8 @@ static void mac_note_frame_leave P_ ((struct frame *));
   if (size_hints == NULL)
     return windowFrame.size;
 
-  emacsViewFrame = [emacsView frame];
-  emacsViewSizeInPixels = [emacsView convertSize:emacsViewFrame.size
+  emacsViewBounds = [emacsView bounds];
+  emacsViewSizeInPixels = [emacsView convertSize:emacsViewBounds.size
 				     toView:nil];
   dw = NSWidth (windowFrame) - emacsViewSizeInPixels.width;
   dh = NSHeight (windowFrame) - emacsViewSizeInPixels.height;
@@ -1509,14 +1509,14 @@ static void mac_note_frame_leave P_ ((struct frame *));
 {
   struct frame *f = emacsFrame;
   EmacsView *emacsView = FRAME_EMACS_VIEW (f);
-  NSRect windowFrame, emacsViewFrame;
+  NSRect windowFrame, emacsViewBounds;
   NSSize emacsViewSizeInPixels, emacsViewSize;
   CGFloat dw, dh, dx, dy;
   int columns, rows;
 
   windowFrame = [sender frame];
-  emacsViewFrame = [emacsView frame];
-  emacsViewSizeInPixels = [emacsView convertSize:emacsViewFrame.size
+  emacsViewBounds = [emacsView bounds];
+  emacsViewSizeInPixels = [emacsView convertSize:emacsViewBounds.size
 				     toView:nil];
   dw = NSWidth (windowFrame) - emacsViewSizeInPixels.width;
   dh = NSHeight (windowFrame) - emacsViewSizeInPixels.height;
@@ -1698,7 +1698,7 @@ mac_move_window (window, h, v, front)
   NSRect contentViewFrame, baseScreenFrame;
   NSPoint windowFrameOrigin;
 
-  contentViewFrame = [contentView convertRect:[contentView frame] toView:nil];
+  contentViewFrame = [contentView convertRect:[contentView bounds] toView:nil];
   baseScreenFrame = mac_get_base_screen_frame ();
   windowFrameOrigin.x = (h - NSMinX (contentViewFrame)
 			 + NSMinX (baseScreenFrame));
@@ -1715,7 +1715,7 @@ mac_size_window (window, w, h, update)
      Boolean update;
 {
   NSView *contentView;
-  NSRect contentViewFrame, windowFrame;
+  NSRect contentViewBounds, windowFrame;
   NSSize oldSizeInPixels, newSizeInPixels;
   CGFloat dw, dh;
 
@@ -1723,8 +1723,8 @@ mac_size_window (window, w, h, update)
      the same as those in device space coordinates if scaling is in
      effect.  */
   contentView = [(NSWindow *)window contentView];
-  contentViewFrame = [contentView frame];
-  oldSizeInPixels = [contentView convertSize:contentViewFrame.size toView:nil];
+  contentViewBounds = [contentView bounds];
+  oldSizeInPixels = [contentView convertSize:contentViewBounds.size toView:nil];
   newSizeInPixels = [contentView convertSize:(NSMakeSize (w, h)) toView:nil];
   dw = newSizeInPixels.width - oldSizeInPixels.width;
   dh = newSizeInPixels.height - oldSizeInPixels.height;
@@ -1748,7 +1748,7 @@ mac_get_window_bounds (f, inner, outer)
   NSRect windowFrame, emacsViewFrame;
 
   windowFrame = [window frame];
-  emacsViewFrame = [emacsView convertRect:[emacsView frame] toView:nil];
+  emacsViewFrame = [emacsView convertRect:[emacsView bounds] toView:nil];
   emacsViewFrame.origin = [window convertBaseToScreen:emacsViewFrame.origin];
 
   SetRect (outer,
@@ -1987,7 +1987,17 @@ mac_create_frame_window (f, tooltip_p)
   unsigned int windowStyle;
   BOOL deferCreation;
   NSWindow *window, *mainWindow = [NSApp mainWindow];
+  int left_pos, top_pos;
   EmacsView *emacsView;
+
+  /* Save possibly negative position values because they might be
+     changed by `mac_create_frame_tool_bar' -> `windowDidResize:' if
+     the toolbar is visible.  */
+  if (f->size_hint_flags & (USPosition | PPosition))
+    {
+      left_pos = f->left_pos;
+      top_pos = f->top_pos;
+    }
 
   if (!tooltip_p)
     {
@@ -2024,8 +2034,12 @@ mac_create_frame_window (f, tooltip_p)
     }
 
   if (f->size_hint_flags & (USPosition | PPosition))
-    mac_move_window_structure (window, f->left_pos, f->top_pos);
-  else
+    {
+      f->left_pos = left_pos;
+      f->top_pos = top_pos;
+      mac_move_window_structure (window, f->left_pos, f->top_pos);
+    }
+  else if (!tooltip_p)
     {
       if (mainWindow == nil)
 	[window center];
@@ -2184,6 +2198,7 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
 
 @implementation EmacsView
 
+#if 0
 + (void)initialize
 {
   if (self == [EmacsView class])
@@ -2196,6 +2211,7 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
       [defaults registerDefaults:appDefaults];
     }
 }
+#endif
 
 - (id)initWithFrame:(NSRect)frameRect
 {
@@ -2358,13 +2374,40 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
 {
   struct frame *f = [self emacsFrame];
   NSPoint point = [self convertPoint:[theEvent locationInWindow] fromView:nil];
+  int modifiers = mac_event_to_emacs_modifiers (theEvent);
+  CGFloat deltaX = [theEvent deltaX], deltaY = [theEvent deltaY];
+  CGFloat deltaZ = [theEvent deltaZ];
+  CGFloat deviceDeltaX = 0, deviceDeltaY = 0, deviceDeltaZ = 0;
+  Lisp_Object scrollPhase = Qnil;
+
+  if ([theEvent respondsToSelector:@selector(_continuousScroll)]
+      && [theEvent _continuousScroll])
+    {
+      deviceDeltaX = [theEvent deviceDeltaX];
+      deviceDeltaY = [theEvent deviceDeltaY];
+      deviceDeltaZ = [theEvent deviceDeltaZ];
+    }
+  if ([theEvent respondsToSelector:@selector(_scrollPhase)])
+    {
+      scrollPhase = make_number ([theEvent _scrollPhase]);
+      if (EQ (scrollPhase, make_number (0)))
+	{
+	  savedWheelPoint = point;
+	  savedWheelModifiers = modifiers;
+	}
+      else
+	{
+	  point = savedWheelPoint;
+	  modifiers = savedWheelModifiers;
+	}
+    }
 
   if (
 #if 0 /* We let the framework decide whether events to non-focus frame
 	 get accepted.  */
       f != mac_focus_frame (&one_mac_display_info) ||
 #endif
-      [theEvent deltaY] == 0.0f)
+      deltaY == 0 && deviceDeltaY == 0)
     return;
 
   if (point.x < 0 || point.y < 0
@@ -2373,11 +2416,22 @@ static int mac_event_to_emacs_modifiers P_ ((NSEvent *));
     return;
 
   EVENT_INIT (inputEvent);
-  inputEvent.arg = Qnil;
+  inputEvent.arg = list3 (make_float (deltaX), make_float (deltaY),
+			  make_float (deltaZ));
+  if (deviceDeltaX != 0 || deviceDeltaY != 0 || deviceDeltaZ != 0)
+    inputEvent.arg = nconc2 (inputEvent.arg,
+			     list3 (make_float (deviceDeltaX),
+				    make_float (deviceDeltaY),
+				    make_float (deviceDeltaZ)));
+  else if (!NILP (scrollPhase))
+    inputEvent.arg = nconc2 (inputEvent.arg,
+			     list3 (Qnil, Qnil, Qnil));
+  if (!NILP (scrollPhase))
+    inputEvent.arg = nconc2 (inputEvent.arg, Fcons (scrollPhase, Qnil));
   inputEvent.kind = WHEEL_EVENT;
   inputEvent.code = 0;
-  inputEvent.modifiers = (mac_event_to_emacs_modifiers (theEvent)
-			  | (([theEvent deltaY] < 0)
+  inputEvent.modifiers = (modifiers
+			  | (deltaY < 0 || deviceDeltaY < 0
 			     ? down_modifier : up_modifier));
   XSETINT (inputEvent.x, point.x);
   XSETINT (inputEvent.y, point.y);
@@ -2550,7 +2604,7 @@ get_text_input_script_language (slrec)
   return err;
 }
 
-- (void)insertText:(id)aString replacementRange:(NSRange)replacementRange;
+- (void)insertText:(id)aString replacementRange:(NSRange)replacementRange
 {
   OSStatus err;
   struct frame *f = [self emacsFrame];
@@ -2562,13 +2616,17 @@ get_text_input_script_language (slrec)
     {
       NSUInteger flags = [rawKeyEvent modifierFlags];
       UInt32 modifiers = mac_modifier_flags_to_modifiers (flags);
+      unichar character;
 
       if (mac_mapped_modifiers (modifiers, [rawKeyEvent keyCode])
 	  || [rawKeyEvent type] == NSKeyUp
 	  || ([aString isKindOfClass:[NSString class]]
 	      && [aString isEqualToString:[rawKeyEvent characters]]
 	      && [(NSString *)aString length] == 1
-	      && [aString characterAtIndex:0] < 0x80))
+	      && ((character = [aString characterAtIndex:0]) < 0x80
+		  /* NSEvent reserves the following Unicode characters
+		     for function keys on the keyboard.  */
+		  || (character >= 0xf700 && character <= 0xf74f))))
 	{
 	  /* Process it in keyDown:.  */
 	  keyEventsInterpreted = NO;
@@ -2681,7 +2739,7 @@ get_text_input_script_language (slrec)
 }
 
 - (void)setMarkedText:(id)aString selectedRange:(NSRange)selectedRange
-     replacementRange:(NSRange)replacementRange;
+     replacementRange:(NSRange)replacementRange
 {
   OSStatus err;
   struct frame *f = [self emacsFrame];
@@ -2776,7 +2834,7 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 						       int, int, UniChar *));
 
 - (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)aRange
-						actualRange:(NSRangePointer)actualRange;
+						actualRange:(NSRangePointer)actualRange
 {
   NSRange markedRange = [self markedRange];
   NSAttributedString *result = nil;
@@ -2914,7 +2972,7 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 }
 
 - (NSRect)firstRectForCharacterRange:(NSRange)aRange
-			 actualRange:(NSRangePointer)actualRange;
+			 actualRange:(NSRangePointer)actualRange
 {
   NSRect rect = NSZeroRect;
   struct frame *f = NULL;
@@ -2980,7 +3038,7 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 	  && XINT (w->last_modified) == BUF_MODIFF (b)
 	  && XINT (w->last_overlay_modified) == BUF_OVERLAY_MODIFF (b))
 	{
-	  int charpos = BUF_BEGV (b) + aRange.location;
+	  int last_charpos, charpos = BUF_BEGV (b) + aRange.location;
 	  struct glyph *end;
 	  int width = 0;
 
@@ -2996,11 +3054,14 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 	    }
 	  end = row->glyphs[TEXT_AREA] + row->used[TEXT_AREA];
 
+	  last_charpos = charpos;
 	  while (glyph < end
 		 && !INTEGERP (glyph->object)
 		 && (!BUFFERP (glyph->object)
 		     || glyph->charpos < charpos + aRange.length))
 	    {
+	      if (BUFFERP (glyph->object))
+		last_charpos = glyph->charpos;
 	      width += glyph->pixel_width;
 	      ++glyph;
 	    }
@@ -3010,7 +3071,7 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
 			     width, row->height);
 	  if (actualRange)
 	    *actualRange = NSMakeRange (aRange.location,
-					glyph->charpos - charpos);
+					last_charpos - charpos);
 	}
     }
 
@@ -3127,7 +3188,7 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
   mac_handle_size_change (f, NSWidth (frameRect), NSHeight (frameRect));
 }
 
-- (void)viewFrameDidChange:(NSNotification *)aNotification
+- (void)viewFrameDidChange:(NSNotification *)notification
 {
   if (![self inLiveResize])
     {
@@ -3347,10 +3408,43 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
 			     Scroll bars
  ************************************************************************/
 
-#define SCROLL_BAR_FIRST_DELAY 0.5
-#define SCROLL_BAR_CONTINUOUS_DELAY (1.0 / 15)
-
 @implementation NonmodalScroller
+
+static NSTimeInterval NonmodalScrollerButtonDelay = 0.5;
+static NSTimeInterval NonmodalScrollerButtonPeriod = 1.0 / 20;
+static BOOL NonmodalScrollerPagingBehavior;
+
++ (void)initialize
+{
+  if (self == [NonmodalScroller class])
+    {
+      [self updateBehavioralParameters];
+      [[NSDistributedNotificationCenter defaultCenter]
+	addObserver:self
+	   selector:@selector(pagingBehaviorDidChange:)
+	       name:@"AppleNoRedisplayAppearancePreferenceChanged"
+	     object:nil
+	suspensionBehavior:NSNotificationSuspensionBehaviorCoalesce];
+    }
+}
+
++ (void)updateBehavioralParameters
+{
+  NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
+
+  [userDefaults synchronize];
+  NonmodalScrollerButtonDelay =
+    [userDefaults floatForKey:@"NSScrollerButtonDelay"];
+  NonmodalScrollerButtonPeriod =
+    [userDefaults floatForKey:@"NSScrollerButtonPeriod"];
+  NonmodalScrollerPagingBehavior =
+    [userDefaults boolForKey:@"AppleScrollerPagingBehavior"];
+}
+
++ (void)pagingBehaviorDidChange:(NSNotification *)notification
+{
+  [self updateBehavioralParameters];
+}
 
 - (void)dealloc
 {
@@ -3369,17 +3463,25 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
 /* First delay in seconds for mouse tracking.  Subclass may override
    the definition.  */
 
-- (NSTimeInterval)firstDelay
+- (NSTimeInterval)buttonDelay
 {
-  return SCROLL_BAR_FIRST_DELAY;
+  return NonmodalScrollerButtonDelay;
 }
 
 /* Continuous delay in seconds for mouse tracking.  Subclass may
    override the definition.  */
 
-- (NSTimeInterval)continuousDelay
+- (NSTimeInterval)buttonPeriod
 {
-  return SCROLL_BAR_CONTINUOUS_DELAY;
+  return NonmodalScrollerButtonPeriod;
+}
+
+/* Whether a click in the knob slot above/below the knob jumps to the
+   spot that's clicked.  Subclass may override the definition.  */
+
+- (BOOL)pagingBehavior
+{
+  return NonmodalScrollerPagingBehavior;
 }
 
 - (NSScrollerPart)hitPart
@@ -3402,7 +3504,7 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
 /* This method is not documented but Cocoa seems to use this for
    drawing highlighted arrow.  */
 
-- (void)drawArrow:(NSUInteger)position highlightPart:(NSInteger)part;
+- (void)drawArrow:(NSUInteger)position highlightPart:(NSInteger)part
 {
   if (hilightsHitPart)
     part = (hitPart == NSScrollerIncrementLine ? 0 : 1);
@@ -3448,14 +3550,20 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
 
 - (void)mouseDown:(NSEvent *)theEvent
 {
+  BOOL jumpsToClickedSpot;
+
   hitPart = [self testPart:[theEvent locationInWindow]];
 
   if (hitPart == NSScrollerNoPart)
     return;
 
-  if (hitPart != NSScrollerKnob)
+  jumpsToClickedSpot = ([self pagingBehavior]
+		       && (hitPart == NSScrollerIncrementPage
+			   || hitPart == NSScrollerDecrementPage));
+
+  if (hitPart != NSScrollerKnob && !jumpsToClickedSpot)
     {
-      [self rescheduleTimer:[self firstDelay]];
+      [self rescheduleTimer:[self buttonDelay]];
       [self highlight:YES];
       [self sendAction:[self action] to:[self target]];
     }
@@ -3463,15 +3571,45 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
     {
       NSPoint point = [self convertPoint:[theEvent locationInWindow]
 			    fromView:nil];
-      NSRect frameRect, knobRect;
+      NSRect bounds, knobRect;
 
-      frameRect = [self frame];
+      bounds = [self bounds];
       knobRect = [self rectForPart:NSScrollerKnob];
 
-      if (NSHeight (frameRect) >= NSWidth (frameRect))
+      if (jumpsToClickedSpot)
+	{
+	  NSRect knobSlotRect = [self rectForPart:NSScrollerKnobSlot];
+
+	  if (NSHeight (bounds) >= NSWidth (bounds))
+	    {
+	      knobRect.origin.y = point.y - round (NSHeight (knobRect) / 2);
+	      if (NSMinY (knobRect) < NSMinY (knobSlotRect))
+		knobRect.origin.y = knobSlotRect.origin.y;
+#if 0		      /* This might be better if no overscrolling.  */
+	      else if (NSMaxY (knobRect) > NSMaxY (knobSlotRect))
+	      	knobRect.origin.y = NSMaxY (knobSlotRect) - NSHeight (knobRect);
+#endif
+	    }
+	  else
+	    {
+	      knobRect.origin.x = point.x - round (NSWidth (knobRect) / 2);
+	      if (NSMinX (knobRect) < NSMinX (knobSlotRect))
+		knobRect.origin.x = knobSlotRect.origin.x;
+#if 0
+	      else if (NSMaxX (knobRect) > NSMaxX (knobSlotRect))
+		knobRect.origin.x = NSMaxX (knobSlotRect) - NSWidth (knobRect);
+#endif
+	    }
+	  hitPart = NSScrollerKnob;
+	}
+
+      if (NSHeight (bounds) >= NSWidth (bounds))
 	knobGrabOffset = - (point.y - NSMinY (knobRect)) - 1;
       else
 	knobGrabOffset = - (point.x - NSMinX (knobRect)) - 1;
+
+      if (jumpsToClickedSpot)
+	[self mouseDragged:theEvent];
     }
 }
 
@@ -3516,14 +3654,14 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
     {
       NSPoint point = [self convertPoint:[theEvent locationInWindow]
 			    fromView:nil];
-      NSRect frameRect, knobSlotRect;
+      NSRect bounds, knobSlotRect;
 
       if (knobGrabOffset <= -1)
 	knobGrabOffset = - (knobGrabOffset + 1);
 
-      frameRect = [self frame];
+      bounds = [self bounds];
       knobSlotRect = [self rectForPart:NSScrollerKnobSlot];
-      if (NSHeight (frameRect) >= NSWidth (frameRect))
+      if (NSHeight (bounds) >= NSWidth (bounds))
 	knobMinEdgeInSlot = point.y - knobGrabOffset - NSMinY (knobSlotRect);
       else
 	knobMinEdgeInSlot = point.x - knobGrabOffset - NSMinX (knobSlotRect);
@@ -3533,7 +3671,7 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
 	  CGFloat maximum, minEdge;
 	  NSRect KnobRect = [self rectForPart:NSScrollerKnob];
 
-	  if (NSHeight (frameRect) >= NSWidth (frameRect))
+	  if (NSHeight (bounds) >= NSWidth (bounds))
 	    maximum = NSHeight (knobSlotRect) - NSHeight (KnobRect);
 	  else
 	    maximum = NSWidth (knobSlotRect) - NSWidth (KnobRect);
@@ -3581,7 +3719,7 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
       else if (part != hitPart || timer == nil)
 	{
 	  hitPart = part;
-	  [self rescheduleTimer:[self continuousDelay]];
+	  [self rescheduleTimer:[self buttonPeriod]];
 	  [self highlight:YES];
 	  [self sendAction:[self action] to:[self target]];
 	}
@@ -3592,28 +3730,28 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
 
 @implementation EmacsScroller
 
-- (void)viewFrameDidChange:(NSNotification *)aNotification
+- (void)viewFrameDidChange:(NSNotification *)notification
 {
   BOOL enabled = [self isEnabled], tooSmall = NO;
   float floatValue = [self floatValue];
   CGFloat knobProportion = [self knobProportion];
-  NSRect frameRect, knobSlotRect, KnobRect;
+  NSRect bounds, knobSlotRect, KnobRect;
 
-  frameRect = [self frame];
-  if (NSHeight (frameRect) >= NSWidth (frameRect))
+  bounds = [self bounds];
+  if (NSHeight (bounds) >= NSWidth (bounds))
     {
-      if (NSWidth (frameRect) >= MAC_AQUA_VERTICAL_SCROLL_BAR_WIDTH)
+      if (NSWidth (bounds) >= MAC_AQUA_VERTICAL_SCROLL_BAR_WIDTH)
 	[self setControlSize:NSRegularControlSize];
-      else if (NSWidth (frameRect) >= MAC_AQUA_SMALL_VERTICAL_SCROLL_BAR_WIDTH)
+      else if (NSWidth (bounds) >= MAC_AQUA_SMALL_VERTICAL_SCROLL_BAR_WIDTH)
 	[self setControlSize:NSSmallControlSize];
       else
 	tooSmall = YES;
     }
   else
     {
-      if (NSHeight (frameRect) >= MAC_AQUA_VERTICAL_SCROLL_BAR_WIDTH)
+      if (NSHeight (bounds) >= MAC_AQUA_VERTICAL_SCROLL_BAR_WIDTH)
 	[self setControlSize:NSRegularControlSize];
-      else if (NSHeight (frameRect) >= MAC_AQUA_SMALL_VERTICAL_SCROLL_BAR_WIDTH)
+      else if (NSHeight (bounds) >= MAC_AQUA_SMALL_VERTICAL_SCROLL_BAR_WIDTH)
 	[self setControlSize:NSSmallControlSize];
       else
 	tooSmall = YES;
@@ -3628,7 +3766,7 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
   [self setEnabled:YES];
   knobSlotRect = [self rectForPart:NSScrollerKnobSlot];
   KnobRect = [self rectForPart:NSScrollerKnob];
-  if (NSHeight (frameRect) >= NSWidth (frameRect))
+  if (NSHeight (bounds) >= NSWidth (bounds))
     {
       knobSlotSpan = NSHeight (knobSlotRect);
       minKnobSpan = NSHeight (KnobRect);
@@ -3729,21 +3867,21 @@ mac_scroll_area (f, gc, src_x, src_y, width, height, dest_x, dest_y)
   return inputEventCode;
 }
 
-- (void)mouseClick:(NSEvent *)theEvent;
+- (void)mouseClick:(NSEvent *)theEvent
 {
   NSPoint point = [theEvent locationInWindow];
-  NSRect frameRect = [self frame];
+  NSRect bounds = [self bounds];
 
   hitPart = [self testPart:point];
   point = [self convertPoint:point fromView:nil];
-  if (NSHeight (frameRect) >= NSWidth (frameRect))
+  if (NSHeight (bounds) >= NSWidth (bounds))
     {
-      frameSpan = NSHeight (frameRect);
+      frameSpan = NSHeight (bounds);
       clickPositionInFrame = point.y;
     }
   else
     {
-      frameSpan = NSWidth (frameRect);
+      frameSpan = NSWidth (bounds);
       clickPositionInFrame = point.x;
     }
   inputEventCode = mac_get_mouse_btn (theEvent);
@@ -4044,6 +4182,7 @@ extern CGImageRef mac_image_spec_to_cg_image P_ ((struct frame *,
 	       autorelease];
       [item setTarget:self];
       [item setAction:@selector(storeToolBarEvent:)];
+      [item setEnabled:NO];
     }
 
   return item;
@@ -4051,12 +4190,13 @@ extern CGImageRef mac_image_spec_to_cg_image P_ ((struct frame *,
 
 - (NSArray *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar
 {
-  return [NSArray arrayWithObject:TOOLBAR_ICON_ITEM_IDENTIFIER];
+  return [NSArray arrayWithObjects:TOOLBAR_ICON_ITEM_IDENTIFIER,
+		  NSToolbarSeparatorItemIdentifier, nil];
 }
 
 - (NSArray *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar
 {
-  return [NSArray array];
+  return [NSArray arrayWithObject:TOOLBAR_ICON_ITEM_IDENTIFIER];
 }
 
 - (BOOL)validateToolbarItem:(NSToolbarItem *)theItem
@@ -4263,13 +4403,22 @@ free_frame_tool_bar (f)
      FRAME_PTR f;
 {
   NSWindow *window = FRAME_MAC_WINDOW (f);
+  short left, top;
   NSToolbar *toolbar;
+  int win_gravity = f->output_data.mac->toolbar_win_gravity;
 
   BLOCK_INPUT;
+
+  if (win_gravity >= NorthWestGravity && win_gravity <= SouthEastGravity)
+    mac_get_window_origin_with_gravity (f, win_gravity, &left, &top);
 
   toolbar = [window toolbar];
   if ([toolbar isVisible])
     [toolbar setVisible:NO];
+
+  if (win_gravity >= NorthWestGravity && win_gravity <= SouthEastGravity)
+    mac_move_window_with_gravity (f, win_gravity, left, top);
+  f->output_data.mac->toolbar_win_gravity = 0;
 
   UNBLOCK_INPUT;
 }
@@ -4302,10 +4451,10 @@ mac_tool_bar_note_mouse_movement (f, event)
 
 	  if (i < f->n_tool_bar_items)
 	    {
-	      NSRect viewFrame = [hitView frame];
+	      NSRect viewFrame;
 	      EmacsView *emacsView = FRAME_EMACS_VIEW (f);
 
-	      viewFrame = [hitView convertRect:viewFrame toView:nil];
+	      viewFrame = [hitView convertRect:[hitView bounds] toView:nil];
 	      viewFrame = [emacsView convertRect:viewFrame fromView:nil];
 	      SetRect (&last_mouse_glyph,
 		       NSMinX (viewFrame), NSMinY (viewFrame),
@@ -4349,7 +4498,7 @@ mac_create_frame_tool_bar (f)
 #if USE_MAC_TOOLBAR
   [toolbar setDelegate:delegate];
 #endif
-  [toolbar setVisible:NO];
+  [toolbar setVisible:(FRAME_EXTERNAL_TOOL_BAR (f))];
 
   [window setToolbar:toolbar];
   [toolbar release];
@@ -4494,7 +4643,7 @@ enum {
 
 /* Called when the font panel is about to close.  */
 
-- (void)fontPanelWillClose:(NSNotification *)aNotification
+- (void)fontPanelWillClose:(NSNotification *)notification
 {
   OSStatus err;
   EventRef event;
@@ -5569,6 +5718,18 @@ static void mac_fake_menu_bar_click P_ ((EventPriority));
       else
 #endif
 	{
+	  if ([theEvent type] == NSKeyDown
+	      && (([theEvent modifierFlags]
+		   & 0xffff0000UL) /* NSDeviceIndependentModifierFlagsMask */
+		  == ((1UL << 31) | NSCommandKeyMask))
+	      && [[theEvent charactersIgnoringModifiers] isEqualToString:@"c"])
+	    {
+	      /* Probably Command-C from "Speak selected text."  */
+	      [NSApp sendAction:@selector(copy:) to:nil from:nil];
+
+	      return YES;
+	    }
+
 	  /* Note: this is not necessary for binaries built on Mac OS
 	     X 10.5 because -[NSWindow sendEvent:] now sends keyDown:
 	     to the first responder even if the command-key modifier
@@ -6675,7 +6836,7 @@ static NSMutableSet *registered_apple_event_specs;
 @implementation EmacsController (AppleEvent)
 
 - (void)handleAppleEvent:(NSAppleEventDescriptor *)event
-	  withReplyEvent:(NSAppleEventDescriptor *)replyEvent;
+	  withReplyEvent:(NSAppleEventDescriptor *)replyEvent
 {
   OSErr err;
   AEDesc reply;
@@ -6961,7 +7122,6 @@ extern Lisp_Object Qservice, Qpaste, Qperform;
 {
   OSStatus err;
   NSPasteboard *servicePboard;
-  NSArray *serviceTypes;
   NSEnumerator *enumerator;
   NSString *type;
   BOOL result = NO;
@@ -6971,12 +7131,11 @@ extern Lisp_Object Qservice, Qpaste, Qperform;
   if (err != noErr || pboard == nil)
     return NO;
 
-  serviceTypes = [servicePboard types];
   [pboard declareTypes:[NSArray array] owner:nil];
 
-  enumerator = [types objectEnumerator];
+  enumerator = [[servicePboard types] objectEnumerator];
   while ((type = [enumerator nextObject]) != nil)
-    if ([serviceTypes containsObject:type])
+    if ([types containsObject:type])
       {
 	NSData *data = [servicePboard dataForType:type];
 
@@ -7353,7 +7512,7 @@ extern long do_applescript P_ ((Lisp_Object, Lisp_Object *));
     }
 }
 
-@end				// EmacsController (OSA)
+@end				// EmacsController (AppleScript)
 
 long
 mac_appkit_do_applescript (script, result)
