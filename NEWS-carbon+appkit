@@ -1,3 +1,17 @@
+* emacs-22.3-appkit-1.9 (2009-11-01)
+
+** Improvements
+
+*** When delete-selection-mode is enabled, then the active region is
+hidden while the marked text is being shown (so "Reverse conversion"
+in Kotoeri looks better).
+
+*** The current cursor position may be returned for a character
+position query for text input even if the marked text is not displayed
+or handled at the Lisp level yet (so auxiliary windows in AquaSKK 4
+are placed better.)
+
+
 * emacs-22.3-appkit-1.8 (2009-09-27)
 
 ** Fixed bugs

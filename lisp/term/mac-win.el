@@ -1977,7 +1977,8 @@ With numeric ARG, display the font panel if and only if ARG is positive."
 ;;; Text Services
 (defvar mac-ts-update-active-input-area-seqno 0
   "Number of processed update-active-input-area events.")
-(setq mac-ts-active-input-overlay (make-overlay 0 0))
+(setq mac-ts-active-input-overlay (make-overlay 1 1))
+(overlay-put mac-ts-active-input-overlay 'display "")
 
 (defface mac-ts-caret-position
   '((t :inverse-video t))
@@ -2217,9 +2218,15 @@ either in the current buffer or in the echo area."
 				      (concat msg active-input-string)))
 	      (setq msg active-input-string))
 	    (message "%s" msg)
+	    (move-overlay mac-ts-active-input-overlay 1 1)
 	    (overlay-put mac-ts-active-input-overlay 'before-string nil))
 	(move-overlay mac-ts-active-input-overlay
-		      (point) (point) (current-buffer))
+		      (point)
+		      (if (and delete-selection-mode transient-mark-mode
+			       mark-active (not buffer-read-only))
+			  (mark)
+			(point))
+		      (current-buffer))
 	(overlay-put mac-ts-active-input-overlay 'before-string
 		     active-input-string))
       (mac-unread-string (funcall decode-fun confirmed coding)))
@@ -2317,9 +2324,15 @@ either in the current buffer or in the echo area."
 				      (concat msg active-input-string)))
 	      (setq msg active-input-string))
 	    (message "%s" msg)
+	    (move-overlay mac-ts-active-input-overlay 1 1)
 	    (overlay-put mac-ts-active-input-overlay 'before-string nil))
 	(move-overlay mac-ts-active-input-overlay
-		      (point) (point) (current-buffer))
+		      (point)
+		      (if (and delete-selection-mode transient-mark-mode
+			       mark-active (not buffer-read-only))
+			  (mark)
+			(point))
+		      (current-buffer))
 	(overlay-put mac-ts-active-input-overlay 'before-string
 		     active-input-string)))))
 
@@ -2332,6 +2345,7 @@ either in the current buffer or in the echo area."
 		      (or (cdr (assq (car script-language)
 				     mac-script-code-coding-systems))
 			  'mac-roman))))
+    (move-overlay mac-ts-active-input-overlay 1 1)
     (overlay-put mac-ts-active-input-overlay 'before-string nil)
     (let ((msg (current-message))
 	  message-log-max)

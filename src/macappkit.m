@@ -127,7 +127,7 @@ NSRectToCGRect (nsrect)
 
 + (id)stringWithUTF8String:(const char *)bytes fallback:(BOOL)flag
 {
-  id string = [[self class] stringWithUTF8String:bytes];
+  id string = [self stringWithUTF8String:bytes];
 
   if (string == nil && flag)
     {
@@ -303,15 +303,31 @@ NSRectToCGRect (nsrect)
 
 + (id)imageWithCGImage:(CGImageRef)cgImage
 {
-  NSRect rect = NSMakeRect (0, 0, CGImageGetWidth (cgImage),
-			    CGImageGetHeight (cgImage));
-  id image = [[[self class] alloc] initWithSize:rect.size];
-  CGContextRef context;
+  NSImage *image;
 
-  [image lockFocus];
-  context = [[NSGraphicsContext currentContext] graphicsPort];
-  CGContextDrawImage (context, NSRectToCGRect (rect), cgImage);
-  [image unlockFocus];
+  if ([NSBitmapImageRep instancesRespondToSelector:@selector(initWithCGImage:)])
+    {
+      NSBitmapImageRep *rep =
+	[[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+
+      image = [[self alloc] initWithSize:[rep size]];
+      [image addRepresentation:rep];
+      [rep release];
+
+      return [image autorelease];
+    }
+  else
+    {
+      NSRect rect = NSMakeRect (0, 0, CGImageGetWidth (cgImage),
+				CGImageGetHeight (cgImage));
+      CGContextRef context;
+
+      image = [[self alloc] initWithSize:rect.size];
+      [image lockFocus];
+      context = [[NSGraphicsContext currentContext] graphicsPort];
+      CGContextDrawImage (context, NSRectToCGRect (rect), cgImage);
+      [image unlockFocus];
+    }
 
   return [image autorelease];
 }
@@ -1779,6 +1795,14 @@ mac_rect_make (f, x, y, w, h)
      struct frame *f;
      CGFloat x, y, w, h;
 {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+  EmacsView *emacsView = FRAME_EMACS_VIEW (f);
+  NSRect rect = NSMakeRect (x, y, w, h);
+
+  /* The behavior of -[NSView centerScanRect:] depends on whether or
+     not the binary is linked on Mac OS X 10.5 or later.  */
+  return NSRectToCGRect ([emacsView centerScanRect:rect]);
+#else
   NSWindow *window = FRAME_MAC_WINDOW (f);
   CGFloat scaleFactor;
 
@@ -1805,6 +1829,7 @@ mac_rect_make (f, x, y, w, h)
 
       return NSRectToCGRect (rect);
     }
+#endif
 }
 
 void
@@ -1846,8 +1871,8 @@ mac_set_frame_window_background (f, color)
   green = GREEN_FROM_ULONG (color) / 255.0;
   blue = BLUE_FROM_ULONG (color) / 255.0;
 
-  [window setBackgroundColor:[NSColor colorWithCalibratedRed:red
-				      green:green blue:blue alpha:1.0]];
+  [window setBackgroundColor:[NSColor colorWithDeviceRed:red green:green
+						    blue:blue alpha:1.0]];
 }
 
 /* Flush display of frame F, or of all frames if F is null.  */
@@ -2883,7 +2908,8 @@ extern int mac_store_buffer_text_to_unicode_chars P_ ((struct buffer *,
       /* Find the glyph under X/Y.  */
       glyph = x_y_to_hpos_vpos (w, x, y, &hpos, &vpos, 0, 0, &area);
 
-      if (glyph != NULL && area == TEXT_AREA)
+      if (glyph != NULL && area == TEXT_AREA
+	  && BUFFERP (glyph->object) && glyph->charpos <= BUF_Z (b))
 	result = glyph->charpos - BUF_BEGV (b);
     }
 

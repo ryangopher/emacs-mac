@@ -721,7 +721,8 @@ mac_handle_text_input_event (next_handler, event, data)
 		/* Find the glyph under X/Y.  */
 		glyph = x_y_to_hpos_vpos (w, x, y, &hpos, &vpos, 0, 0, &area);
 
-		if (glyph != NULL && area == TEXT_AREA)
+		if (glyph != NULL && area == TEXT_AREA
+		    && BUFFERP (glyph->object) && glyph->charpos <= BUF_Z (b))
 		  {
 		    byte_offset = ((glyph->charpos - BUF_BEGV (b))
 				   * sizeof (UniChar));
