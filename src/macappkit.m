@@ -1762,6 +1762,11 @@ static EventRef peek_if_next_event_activates_menu_bar (void);
   [self setTrackingObject:nil andResumeSelector:@selector(dummy)]
 #endif  /* MAC_OS_X_VERSION_MIN_REQUIRED < 1060 */
 
+- (BOOL)isMouseTrackingSuspended
+{
+  return MOUSE_TRACKING_SUSPENDED_P ();
+}
+
 /* Minimum time interval between successive mac_read_socket calls.  */
 
 #define READ_SOCKET_MIN_INTERVAL (1/60.0)
@@ -2563,6 +2568,11 @@ static CGRect unset_global_focus_view_frame (void);
     }
 }
 
+- (BOOL)isConstrainingToScreenSuspended
+{
+  return constrainingToScreenSuspended;
+}
+
 - (void)setConstrainingToScreenSuspended:(BOOL)flag
 {
   constrainingToScreenSuspended = flag;
@@ -2676,12 +2686,6 @@ static CGRect unset_global_focus_view_frame (void);
 
   [self setupEmacsView];
   [self setupWindow];
-  if (!FRAME_TOOLTIP_P (f))
-    [[NSNotificationCenter defaultCenter]
-      addObserver:self
-	 selector:@selector(emacsMainViewFrameDidChange:)
-	     name:@"NSViewFrameDidChangeNotification"
-	   object:emacsView];
 
   return self;
 }
@@ -2877,7 +2881,8 @@ static CGRect unset_global_focus_view_frame (void);
       [window setAcceptsMouseMovedEvents:YES];
       if (!(windowManagerState & WM_STATE_FULLSCREEN))
 	[self setupToolBarWithVisibility:(FRAME_EXTERNAL_TOOL_BAR (f))];
-      [window setShowsResizeIndicator:NO];
+      if (has_resize_indicator_at_bottom_right_p ())
+	[window setShowsResizeIndicator:NO];
       [self setupOverlayWindowAndView];
       [self attachOverlayWindow];
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1060
@@ -2909,10 +2914,9 @@ static CGRect unset_global_focus_view_frame (void);
   return emacsWindow;
 }
 
+#if !USE_ARC
 - (void)dealloc
 {
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
-#if !USE_ARC
   [emacsView release];
   /* emacsWindow is released via released-when-closed.  */
   [hourglass release];
@@ -2922,8 +2926,8 @@ static CGRect unset_global_focus_view_frame (void);
   [overlayView release];
   [overlayWindow release];
   [super dealloc];
-#endif
 }
+#endif
 
 - (NSSize)hintedWindowFrameSize:(NSSize)frameSize allowsLarger:(BOOL)flag
 {
@@ -3561,6 +3565,8 @@ static CGRect unset_global_focus_view_frame (void);
       MRC_RELEASE (overlayWindow);
       overlayWindow = nil;
     }
+  [emacsView removeFromSuperview];
+  [emacsWindow setDelegate:nil];
 }
 
 - (void)windowWillMove:(NSNotification *)notification
@@ -3586,19 +3592,25 @@ static CGRect unset_global_focus_view_frame (void);
     }
   else
     {
-      NSRect screenVisibleFrame = [[window screen] visibleFrame];
-      BOOL allowsLarger = (leftMouseDragged
-			   && has_resize_indicator_at_bottom_right_p ());
+      if (leftMouseDragged || [emacsController isMouseTrackingSuspended])
+	result = [self hintedWindowFrameSize:proposedFrameSize
+				allowsLarger:YES];
+      else
+	result = proposedFrameSize;
+      if (windowManagerState
+	  & (WM_STATE_MAXIMIZED_HORZ | WM_STATE_MAXIMIZED_VERT))
+	{
+	  NSRect screenVisibleFrame = [[window screen] visibleFrame];
 
-      result = [self hintedWindowFrameSize:proposedFrameSize
-			      allowsLarger:allowsLarger];
-      if (windowManagerState & WM_STATE_MAXIMIZED_HORZ)
-	result.width = NSWidth (screenVisibleFrame);
-      if (windowManagerState & WM_STATE_MAXIMIZED_VERT)
-	result.height = NSHeight (screenVisibleFrame);
+	  if (windowManagerState & WM_STATE_MAXIMIZED_HORZ)
+	    result.width = NSWidth (screenVisibleFrame);
+	  if (windowManagerState & WM_STATE_MAXIMIZED_VERT)
+	    result.height = NSHeight (screenVisibleFrame);
+	}
     }
 
   if (leftMouseDragged
+      && floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_11
       && (has_resize_indicator_at_bottom_right_p ()
 	  || !([currentEvent modifierFlags]
 	       & (NSEventModifierFlagShift | NSEventModifierFlagOption))))
@@ -3658,27 +3670,6 @@ static CGRect unset_global_focus_view_frame (void);
     windowFrame.origin.y += dy;
 
   return windowFrame;
-}
-
-/* This used be in EmacsMainView, but it might live longer than the
-   window delegate on OS X 10.11 when closing a full screen window,
-   and might receive a bogus notification after the delegate has been
-   deallocated.  */
-
-- (void)emacsMainViewFrameDidChange:(NSNotification *)notification
-{
-  if (![emacsView inLiveResize]
-      && ([emacsView autoresizingMask]
-	  & (NSViewWidthSizable | NSViewHeightSizable)))
-    {
-      struct frame *f = emacsFrame;
-      NSRect frameRect = [emacsView frame];
-
-      mac_handle_size_change (f, NSWidth (frameRect), NSHeight (frameRect));
-      /* Exit from select_and_poll_event so as to react to the frame
-	 size change.  */
-      [NSApp postDummyEvent];
-    }
 }
 
 - (NSBitmapImageRep *)bitmapImageRepInContentViewRect:(NSRect)rect
@@ -4066,11 +4057,16 @@ static CGRect unset_global_focus_view_frame (void);
      from full screen on OS X 10.9.  To work around this problem, we
      detach/attach the overlay window in the
      `window{Will,Did}{Enter,Exit}FullScreen:' delegate methods.  */
-  [self detachOverlayWindow];
-  [self addFullScreenTransitionCompletionHandler:^(EmacsWindow *window,
-						   BOOL success) {
-      [weakSelf attachOverlayWindow];
-    }];
+  /* This erases tabs after exiting from full screen on macOS 10.12.
+     Maybe this is no longer necessary on all versions?  */
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_11)
+    {
+      [self detachOverlayWindow];
+      [self addFullScreenTransitionCompletionHandler:^(EmacsWindow *window,
+						       BOOL success) {
+	  [weakSelf attachOverlayWindow];
+	}];
+    }
 
   /* This is a workaround for the problem of not preserving toolbar
      visibility value.  */
@@ -4125,11 +4121,14 @@ static CGRect unset_global_focus_view_frame (void);
   if (!(floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_10_Max))
     [self preprocessWindowManagerStateChange:fullScreenTargetState];
 
-  [self detachOverlayWindow];
-  [self addFullScreenTransitionCompletionHandler:^(EmacsWindow *window,
-						   BOOL success) {
-      [weakSelf attachOverlayWindow];
-    }];
+  if (floor (NSAppKitVersionNumber) <= NSAppKitVersionNumber10_11)
+    {
+      [self detachOverlayWindow];
+      [self addFullScreenTransitionCompletionHandler:^(EmacsWindow *window,
+						       BOOL success) {
+	  [weakSelf attachOverlayWindow];
+	}];
+    }
 
   /* This is a workaround for the problem of not preserving toolbar
      visibility value.  */
@@ -4417,6 +4416,39 @@ mac_bring_frame_window_to_front_and_activate (struct frame *f,
 
   if (![NSApp isHidden])
     {
+      if (!FRAME_TOOLTIP_P (f)
+	  && [window respondsToSelector:@selector(setTabbingMode:)]
+	  && ![window isVisible])
+	{
+	  NSWindowTabbingMode tabbingMode = NSWindowTabbingModeAutomatic;
+	  NSWindow *mainWindow = [NSApp mainWindow];
+
+	  if (NILP (Vmac_frame_tabbing))
+	    tabbingMode = NSWindowTabbingModeDisallowed;
+	  else if (EQ (Vmac_frame_tabbing, Qt))
+	    tabbingMode = NSWindowTabbingModePreferred;
+	  else if (EQ (Vmac_frame_tabbing, Qinverted))
+	    switch ([NSWindow userTabbingPreference])
+	      {
+	      case NSWindowUserTabbingPreferenceManual:
+		tabbingMode = NSWindowTabbingModePreferred;
+		break;
+	      case NSWindowUserTabbingPreferenceAlways:
+		tabbingMode = NSWindowTabbingModeDisallowed;
+		break;
+	      case NSWindowUserTabbingPreferenceInFullScreen:
+		if ([mainWindow styleMask] & NSWindowStyleMaskFullScreen)
+		  tabbingMode = NSWindowTabbingModeDisallowed;
+		else
+		  tabbingMode = NSWindowTabbingModePreferred;
+		break;
+	      }
+
+	  [window setTabbingMode:tabbingMode];
+	  if ([mainWindow isKindOfClass:[EmacsWindow class]])
+	    [mainWindow setTabbingMode:tabbingMode];
+	}
+
       if (activate_p)
 	[window makeKeyAndOrderFront:nil];
       else
@@ -5026,6 +5058,12 @@ static int mac_event_to_emacs_modifiers (NSEvent *);
   if (self == nil)
     return nil;
 
+  [[NSNotificationCenter defaultCenter]
+    addObserver:self
+       selector:@selector(viewFrameDidChange:)
+	   name:@"NSViewFrameDidChangeNotification"
+	 object:self];
+
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 1050
   if (mac_tracking_area_works_with_cursor_rects_invalidation_p ())
     {
@@ -5048,14 +5086,15 @@ static int mac_event_to_emacs_modifiers (NSEvent *);
   return self;
 }
 
-#if !USE_ARC
 - (void)dealloc
 {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+#if !USE_ARC
   [rawKeyEvent release];
   [markedText release];
   [super dealloc];
-}
 #endif
+}
 
 - (struct frame *)emacsFrame
 {
@@ -6169,6 +6208,21 @@ get_text_input_script_language (ScriptLanguageRecord *slrec)
   /* Exit from select_and_poll_event so as to react to the frame size
      change, especially in a full screen tile on OS X 10.11.  */
   [NSApp postDummyEvent];
+}
+
+- (void)viewFrameDidChange:(NSNotification *)notification
+{
+  if (![self inLiveResize]
+      && ([self autoresizingMask] & (NSViewWidthSizable | NSViewHeightSizable)))
+    {
+      struct frame *f = [self emacsFrame];
+      NSRect frameRect = [self frame];
+
+      mac_handle_size_change (f, NSWidth (frameRect), NSHeight (frameRect));
+      /* Exit from select_and_poll_event so as to react to the frame
+	 size change.  */
+      [NSApp postDummyEvent];
+    }
 }
 
 @end				// EmacsMainView
@@ -7771,6 +7825,7 @@ update_frame_tool_bar (struct frame *f)
   NSUInteger count;
   int i, pos, win_gravity = f->output_data.mac->toolbar_win_gravity;
   bool use_multiimage_icons_p = true;
+  BOOL savedConstrainingToScreenSuspended;
 
   block_input ();
 
@@ -7778,6 +7833,7 @@ update_frame_tool_bar (struct frame *f)
   mac_get_frame_window_gravity_reference_bounds (f, win_gravity, &r);
   /* Shrinking the toolbar height with preserving the whole window
      height (e.g., fullheight) seems to be problematic.  */
+  savedConstrainingToScreenSuspended = [window isConstrainingToScreenSuspended];
   [window setConstrainingToScreenSuspended:YES];
 
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 1070
@@ -7942,7 +7998,7 @@ update_frame_tool_bar (struct frame *f)
   if (![toolbar isVisible])
     [toolbar setVisible:YES];
 
-  [window setConstrainingToScreenSuspended:NO];
+  [window setConstrainingToScreenSuspended:savedConstrainingToScreenSuspended];
   win_gravity = f->output_data.mac->toolbar_win_gravity;
   r.width = 0;
   if (!([frameController windowManagerState] & WM_STATE_MAXIMIZED_VERT))
@@ -12167,23 +12223,39 @@ static NSDate *documentRasterizerCacheOldestTimestamp;
   PDFPage *page = [self pageAtIndex:index];
   NSRect bounds = [page boundsForBox:kPDFDisplayBoxTrimBox];
   int rotation = [page rotation];
-  NSAffineTransform *transform = [NSAffineTransform transform];
   CGFloat width, height;
-  NSGraphicsContext *gcontext;
 
   if (rotation == 0 || rotation == 180)
     width = ceil (NSWidth (bounds)), height = ceil (NSHeight (bounds));
   else
     width = ceil (NSHeight (bounds)), height = ceil (NSWidth (bounds));
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101200
+  if ([page respondsToSelector:@selector(drawWithBox:toContext:)])
+#endif
+    {
+      CGContextSaveGState (ctx);
+      CGContextTranslateCTM (ctx, NSMinX (rect), NSMinY (rect));
+      CGContextScaleCTM (ctx, NSWidth (rect) / width, NSHeight (rect) / height);
+      [page drawWithBox:kPDFDisplayBoxTrimBox toContext:ctx];
+      CGContextRestoreGState (ctx);
+    }
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101200
+  else
+    {
+      NSAffineTransform *transform = [NSAffineTransform transform];
+      NSGraphicsContext *gcontext =
+	[NSGraphicsContext graphicsContextWithGraphicsPort:ctx flipped:NO];
 
-  gcontext = [NSGraphicsContext graphicsContextWithGraphicsPort:ctx flipped:NO];
-  [NSGraphicsContext saveGraphicsState];
-  [NSGraphicsContext setCurrentContext:gcontext];
-  [transform translateXBy:(NSMinX (rect)) yBy:(NSMinY (rect))];
-  [transform scaleXBy:(NSWidth (rect) / width) yBy:(NSHeight (rect) / height)];
-  [transform concat];
-  [page drawWithBox:kPDFDisplayBoxTrimBox];
-  [NSGraphicsContext restoreGraphicsState];
+      [NSGraphicsContext saveGraphicsState];
+      [NSGraphicsContext setCurrentContext:gcontext];
+      [transform translateXBy:(NSMinX (rect)) yBy:(NSMinY (rect))];
+      [transform scaleXBy:(NSWidth (rect) / width)
+		      yBy:(NSHeight (rect) / height)];
+      [transform concat];
+      [page drawWithBox:kPDFDisplayBoxTrimBox];
+      [NSGraphicsContext restoreGraphicsState];
+    }
+#endif
 }
 
 @end				// EmacsPDFDocument
@@ -13341,7 +13413,7 @@ ax_get_rtf_for_range (EmacsMainView *emacsView, id parameter)
 
   return [attributedString
 	   RTFFromRange:(NSMakeRange (0, [attributedString length]))
-	   documentAttributes:nil];
+	   documentAttributes:[NSDictionary dictionary]];
 }
 
 static id

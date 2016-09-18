@@ -52,6 +52,9 @@ along with GNU Emacs Mac port.  If not, see <http://www.gnu.org/licenses/>.  */
 #ifndef NSAppKitVersionNumber10_10_Max
 #define NSAppKitVersionNumber10_10_Max 1349
 #endif
+#ifndef NSAppKitVersionNumber10_11
+#define NSAppKitVersionNumber10_11 1404
+#endif
 
 #ifndef NSINTEGER_DEFINED
 typedef int NSInteger;
@@ -322,6 +325,7 @@ typedef id instancetype;
 - (void)resumeResizeTracking;
 - (BOOL)needsOrderFrontOnUnhide;
 - (void)setNeedsOrderFrontOnUnhide:(BOOL)flag;
+- (BOOL)isConstrainingToScreenSuspended;
 - (void)setConstrainingToScreenSuspended:(BOOL)flag;
 @end
 
@@ -1023,6 +1027,25 @@ enum {
   NSWindowStyleMaskFullScreen		= NSFullScreenWindowMask
 };
 typedef NSUInteger NSWindowStyleMask;
+
+enum {
+  NSWindowUserTabbingPreferenceManual,
+  NSWindowUserTabbingPreferenceAlways,
+  NSWindowUserTabbingPreferenceInFullScreen
+};
+typedef NSInteger NSWindowUserTabbingPreference;
+
+enum {
+  NSWindowTabbingModeAutomatic,
+  NSWindowTabbingModePreferred,
+  NSWindowTabbingModeDisallowed
+};
+typedef NSInteger NSWindowTabbingMode;
+
+@interface NSWindow (AvailableOn101200AndLater)
++ (NSWindowUserTabbingPreference)userTabbingPreference;
+- (void)setTabbingMode:(NSWindowTabbingMode)tabbingMode;
+@end
 #endif
 
 #if MAC_OS_X_VERSION_MAX_ALLOWED < 1070
@@ -1216,6 +1239,12 @@ enum {
   NSControlSizeRegular	= NSRegularControlSize,
   NSControlSizeSmall	= NSSmallControlSize
 };
+#endif
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED < 101200
+@interface PDFPage (AvailableOn101200AndLater)
+- (void) drawWithBox: (PDFDisplayBox) box toContext:(CGContextRef)context;
+@end
 #endif
 
 #if MAC_OS_X_VERSION_MAX_ALLOWED < 101100

@@ -1,4 +1,36 @@
+* emacs-24.5-mac-5.19 (2016-09-18)
+Official git repository is https://bitbucket.org/mituharu/emacs-mac.git
+(the "mac-24" branch)
+
+** Fixed bugs
+
+*** Crash when closing a fullscreen frame on macOS 10.12.
+
+*** Can't resize a frame by dragging its edge on macOS 10.12.
+
+*** Cyrillic text composition in HELLO file is shown wrong with Menlo.
+
+*** Several glitches in frame tabbing on macOS 10.12.
+To address this issue in a simple and consistent way, we now round the
+frame size according to the character size only on resize by mouse
+dragging or changes of the `fullscreen' frame parameter.  This may
+cause some incompatibility.
+
+*** Fullscreen frames contain space at the top on OS X 10.10.
+
+** Improvements
+
+*** Update emoji sequence data to version 4.0 draft.
+
+*** New variable `mac-frame-tabbing' specifying tabbing behavior of a
+frame that is becoming visible on macOS 10.12.
+
+*** C-x 5 5 ... behaves like the C-x 5 prefix, but temporarily changes
+tabbing behavior if "5" is typed repeatedly on macOS 10.12.
+
+
 * emacs-24.5-mac-5.18 (2016-06-26)
+http://lists.gnu.org/archive/html/emacs-devel/2016-06/msg00601.html
 
 ** Fixed bugs
 

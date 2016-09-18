@@ -419,6 +419,7 @@ extern Lisp_Object Qtext_input, Qinsert_text, Qset_marked_text;
 extern Lisp_Object Qaction, Qmac_action_key_paths;
 extern Lisp_Object Qaccessibility;
 extern Lisp_Object Qservice, Qpaste, Qperform;
+extern Lisp_Object Qautomatic, Qinverted;
 extern void x_set_window_size (struct frame *, int, int, int, bool);
 extern void x_set_mouse_position (struct frame *, int, int);
 extern void x_set_mouse_pixel_position (struct frame *, int, int);

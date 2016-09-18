@@ -4478,6 +4478,8 @@ Lisp_Object Qreverse;
 
 Lisp_Object Qkeyboard_modifiers;
 
+Lisp_Object Qautomatic, Qinverted;
+
 /* Whether or not the screen configuration has changed.  */
 bool mac_screen_config_changed = 0;
 
@@ -5876,6 +5878,9 @@ syms_of_macterm (void)
 
   DEFSYM (Qkeyboard_modifiers, "keyboard-modifiers");
 
+  DEFSYM (Qautomatic, "automatic");
+  DEFSYM (Qinverted, "inverted");
+
   staticpro (&x_display_rdb_list);
   x_display_rdb_list = Qnil;
 
@@ -6164,4 +6169,13 @@ It allows us to perform graphical drawing operations in a non-main
 thread in some situations.  This variable has no effect on Mac OS X
 10.5 and earlier.  */);
   mac_drawing_use_gcd = 1;
+
+  DEFVAR_LISP ("mac-frame-tabbing", Vmac_frame_tabbing,
+    doc: /* Specify tabbing behavior of a frame that is becoming visible.
+The symbol `automatic' (default) means it follows the system setting,
+and `inverted' means the system setting is inverted.  Nil and t means
+tabbing is disallowed and preferred, respectively.
+
+This variable has no effect on OS X 10.11 and earlier.  */);
+  Vmac_frame_tabbing = Qautomatic;
 }
