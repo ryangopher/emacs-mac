@@ -1,6 +1,40 @@
+* emacs-24.5-mac-5.20 (2016-10-30)
+
+** Fixed bugs
+
+*** Incremental search with a Japanese text in an empty buffer fails.
+Reported by Takaaki Ishikawa.
+
+*** Crash when showing a tooltip on macOS 10.12 if compiled with
+enable-checking.
+
+*** Crash with C-x 5 5 2 -> C-x 5 2 -> close the first frame with the
+red "x" button on macOS 10.12.
+
+*** Fullscreen transition animation looks awkward on OS X 10.7.
+This is a regression introduced in 5.19 as the fix for "fullscreen
+frames contain space at the top on OS X 10.10".
+
+*** M-x battery RET does not show battery info on macOS 10.12.
+Apply a fix for Bug#24537.
+
+*** Emacs sometimes becomes unresponsive to Dock icon clicks (though
+it reacts to Command-Tab) if its frames are completely covered by
+other applications for a while on macOS 10.12.
+
+** Improvements
+
+*** Ligature glyph width is adjusted to a multiple of space width for
+monospace fonts.
+
+*** Screen update during resize now works on macOS 10.12 if
+frame-resize-pixelwise is nil.
+
+
 * emacs-24.5-mac-5.19 (2016-09-18)
 Official git repository is https://bitbucket.org/mituharu/emacs-mac.git
 (the "mac-24" branch)
+http://lists.gnu.org/archive/html/emacs-devel/2016-09/msg00480.html
 
 ** Fixed bugs
 
